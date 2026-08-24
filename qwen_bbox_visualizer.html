@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>图片识别框可视化</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #d1d5db;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --danger: #dc2626;
+      --success: #15803d;
+      --shadow: 0 8px 28px rgba(15, 23, 42, .08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .app {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 24px;
+    }
+
+    .sub {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 16px 18px;
+      border-bottom: 1px solid #e5e7eb;
+      font-weight: 700;
+    }
+
+    .panel-body {
+      padding: 18px;
+    }
+
+    .field {
+      margin-bottom: 16px;
+    }
+
+    .field:last-child { margin-bottom: 0; }
+
+    label {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    input[type="file"], select, textarea {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+
+    input[type="file"] {
+      padding: 9px;
+    }
+
+    select {
+      height: 40px;
+      padding: 0 10px;
+    }
+
+    textarea {
+      min-height: 340px;
+      padding: 12px;
+      resize: vertical;
+      line-height: 1.5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .hint {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    button.primary:hover { background: var(--primary-hover); }
+
+    button.secondary {
+      background: #eef2ff;
+      color: #3730a3;
+    }
+
+    button.ghost {
+      background: #f3f4f6;
+      color: #374151;
+    }
+
+    button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    .status {
+      margin-top: 14px;
+      min-height: 22px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      background: #f8fafc;
+      color: var(--muted);
+      border: 1px solid #e5e7eb;
+      white-space: pre-wrap;
+    }
+
+    .status.error {
+      color: #991b1b;
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+
+    .status.ok {
+      color: #166534;
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+    }
+
+    .canvas-wrap {
+      padding: 16px;
+      min-height: 520px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background:
+        linear-gradient(45deg,#f8fafc 25%,transparent 25%),
+        linear-gradient(-45deg,#f8fafc 25%,transparent 25%),
+        linear-gradient(45deg,transparent 75%,#f8fafc 75%),
+        linear-gradient(-45deg,transparent 75%,#f8fafc 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100%;
+      max-height: 78vh;
+      border-radius: 6px;
+      box-shadow: 0 2px 14px rgba(15,23,42,.12);
+      background: #fff;
+    }
+
+    .empty {
+      color: var(--muted);
+      text-align: center;
+      padding: 80px 20px;
+      line-height: 1.7;
+    }
+
+    .summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid #e5e7eb;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #f3f4f6;
+    }
+
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+      textarea { min-height: 240px; }
+      .canvas-wrap { min-height: 360px; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <h1>图片识别框可视化</h1>
+    <p class="sub">上传图片并粘贴 JSON / Qwen 风格识别结果，在原图上绘制 bbox、状态和置信度，可导出标注结果。</p>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-header">输入</div>
+        <div class="panel-body">
+          <div class="field">
+            <label for="imageInput">1. 上传图片</label>
+            <input id="imageInput" type="file" accept="image/*" />
+          </div>
+
+          <div class="field">
+            <label for="coordMode">2. bbox 坐标模式</label>
+            <select id="coordMode">
+              <option value="qwen" selected>Qwen 0 ~ 1000 坐标（推荐）</option>
+              <option value="pixel">原图像素坐标</option>
+              <option value="auto">自动判断</option>
+            </select>
+            <div class="hint">
+              Qwen 模式会把 [x1,y1,x2,y2] 按 1000×1000 归一坐标映射到实际图片宽高。
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="jsonInput">3. JSON 识别串</label>
+            <textarea id="jsonInput" spellcheck="false" placeholder='[
+  {
+    "bbox_2d": [64, 46, 250, 477],
+    "label": "显示器屏",
+    "state": "正常",
+    "confidence": 0.95
+  }
+]'></textarea>
+            <div class="hint">
+              支持标准 JSON 数组 / 对象，也兼容类似 <code>正常6:[{...}]</code> 的 Qwen 文本片段。
+              每个识别项至少需要 <code>bbox_2d</code>。
+            </div>
+          </div>
+
+          <div class="actions">
+            <button id="renderBtn" class="primary">绘制识别结果</button>
+            <button id="demoBtn" class="secondary">填入示例</button>
+            <button id="clearBtn" class="ghost">清空框</button>
+            <button id="downloadBtn" class="ghost" disabled>下载标注图片</button>
+          </div>
+
+          <div id="status" class="status">请先上传图片。</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">输出结果</div>
+        <div id="canvasWrap" class="canvas-wrap">
+          <div id="emptyState" class="empty">
+            上传图片后会在这里显示预览。<br />
+            点击“绘制识别结果”即可叠加识别框。
+          </div>
+          <canvas id="canvas" style="display:none"></canvas>
+        </div>
+        <div class="summary">
+          <span id="imageInfo" class="badge">图片：未加载</span>
+          <span id="boxInfo" class="badge">识别框：0</span>
+          <span id="modeInfo" class="badge">坐标：Qwen 0~1000</span>
+        </div>
+      </section>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const imageInput = document.getElementById('imageInput');
+  const coordMode = document.getElementById('coordMode');
+  const jsonInput = document.getElementById('jsonInput');
+  const renderBtn = document.getElementById('renderBtn');
+  const demoBtn = document.getElementById('demoBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const emptyState = document.getElementById('emptyState');
+  const statusEl = document.getElementById('status');
+  const imageInfo = document.getElementById('imageInfo');
+  const boxInfo = document.getElementById('boxInfo');
+  const modeInfo = document.getElementById('modeInfo');
+
+  let image = null;
+  let imageFileName = 'annotated.png';
+  let currentDetections = [];
+
+  const COLORS = {
+    normal: '#16a34a',
+    black: '#dc2626',
+    warning: '#f59e0b',
+    default: '#2563eb'
+  };
+
+  function setStatus(message, type = '') {
+    statusEl.textContent = message;
+    statusEl.className = 'status' + (type ? ' ' + type : '');
+  }
+
+  function colorForState(state) {
+    const s = String(state ?? '').trim().toLowerCase();
+    if (s.includes('正常') || s === 'normal' || s === 'ok') return COLORS.normal;
+    if (s.includes('黑屏') || s.includes('异常') || s === 'black' || s === 'error') return COLORS.black;
+    if (s.includes('警告') || s.includes('warning')) return COLORS.warning;
+    return COLORS.default;
+  }
+
+  function normalizeDetection(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+
+    const bbox = obj.bbox_2d ?? obj.bbox ?? obj.box ?? obj.rect;
+    if (!Array.isArray(bbox) || bbox.length < 4) return null;
+
+    const nums = bbox.slice(0, 4).map(Number);
+    if (nums.some(v => !Number.isFinite(v))) return null;
+
+    return {
+      bbox_2d: nums,
+      label: obj.label ?? obj.class ?? obj.name ?? '目标',
+      state: obj.state ?? obj.status ?? '',
+      confidence: obj.confidence ?? obj.score ?? obj.conf ?? null
+    };
+  }
+
+  function collectDetections(value, out = []) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const det = normalizeDetection(item);
+        if (det) out.push(det);
+        else collectDetections(item, out);
+      }
+    } else if (value && typeof value === 'object') {
+      const det = normalizeDetection(value);
+      if (det) {
+        out.push(det);
+      } else {
+        for (const v of Object.values(value)) collectDetections(v, out);
+      }
+    }
+    return out;
+  }
+
+  // 兼容非严格 JSON，例如：
+  // 正常6:[
+  //   {"bbox_2d":[64,46,250,477],"label":"显示器屏","state":"正常"}
+  // ]
+  function parseLooseText(text) {
+    const objects = text.match(/\{[^{}]*\}/g) || [];
+    const result = [];
+
+    for (const raw of objects) {
+      const bboxMatch = raw.match(/["']?bbox_2d["']?\s*:\s*\[([^\]]+)\]/i);
+      if (!bboxMatch) continue;
+
+      const bbox = bboxMatch[1]
+        .split(',')
+        .map(s => Number(s.trim()))
+        .slice(0, 4);
+
+      if (bbox.length !== 4 || bbox.some(v => !Number.isFinite(v))) continue;
+
+      const labelMatch = raw.match(/["']?label["']?\s*:\s*["']([^"']*)["']/i);
+      const stateMatch = raw.match(/["']?(?:state|status)["']?\s*:\s*["']([^"']*)["']/i);
+      const confidenceMatch = raw.match(/["']?(?:confidence|score|conf)["']?\s*:\s*(-?\d+(?:\.\d+)?)/i);
+
+      result.push({
+        bbox_2d: bbox,
+        label: labelMatch ? labelMatch[1] : '目标',
+        state: stateMatch ? stateMatch[1] : '',
+        confidence: confidenceMatch ? Number(confidenceMatch[1]) : null
+      });
+    }
+
+    return result;
+  }
+
+  function parseDetections(text) {
+    const trimmed = text.trim();
+    if (!trimmed) throw new Error('识别串为空。');
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      const detections = collectDetections(parsed);
+      if (detections.length === 0) {
+        throw new Error('JSON 解析成功，但没有找到包含 bbox_2d 的识别项。');
+      }
+      return { detections, parser: '标准 JSON' };
+    } catch (jsonError) {
+      const loose = parseLooseText(trimmed);
+      if (loose.length > 0) {
+        return { detections: loose, parser: '兼容文本解析' };
+      }
+      throw new Error('无法解析识别串。请检查 JSON 格式以及 bbox_2d 字段。');
+    }
+  }
+
+  function resolveMode(detections) {
+    if (coordMode.value !== 'auto') return coordMode.value;
+    const maxCoord = Math.max(...detections.flatMap(d => d.bbox_2d.map(Math.abs)));
+    // 常见 Qwen bbox 为 0~1000。这里仅作启发式判断。
+    return maxCoord <= 1000 && (image.naturalWidth > 1000 || image.naturalHeight > 1000)
+      ? 'qwen'
+      : 'pixel';
+  }
+
+  function mapBBox(bbox, mode) {
+    let [x1, y1, x2, y2] = bbox;
+
+    if (mode === 'qwen') {
+      x1 = x1 / 1000 * canvas.width;
+      x2 = x2 / 1000 * canvas.width;
+      y1 = y1 / 1000 * canvas.height;
+      y2 = y2 / 1000 * canvas.height;
+    }
+
+    // 容忍 x1/x2 或 y1/y2 反向
+    let left = Math.min(x1, x2);
+    let right = Math.max(x1, x2);
+    let top = Math.min(y1, y2);
+    let bottom = Math.max(y1, y2);
+
+    // 裁剪到画布范围
+    left = Math.max(0, Math.min(canvas.width, left));
+    right = Math.max(0, Math.min(canvas.width, right));
+    top = Math.max(0, Math.min(canvas.height, top));
+    bottom = Math.max(0, Math.min(canvas.height, bottom));
+
+    return [left, top, right, bottom];
+  }
+
+  function confidenceText(value) {
+    if (value === null || value === undefined || value === '') return '未提供';
+    const num = Number(value);
+    if (!Number.isFinite(num)) return String(value);
+    return Number.isInteger(num) ? String(num) : String(Number(num.toFixed(4)));
+  }
+
+  function drawBaseImage() {
+    if (!image) return;
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0);
+  }
+
+  function drawLabel(text, x, y, color) {
+    const fontSize = Math.max(16, Math.round(canvas.width / 80));
+    const paddingX = Math.max(7, Math.round(fontSize * .45));
+    const paddingY = Math.max(5, Math.round(fontSize * .32));
+    const lineHeight = Math.round(fontSize * 1.25);
+
+    ctx.save();
+    ctx.font = `600 ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+    ctx.textBaseline = 'middle';
+
+    const maxWidth = Math.max(160, canvas.width - x - 4);
+    let displayText = text;
+    while (ctx.measureText(displayText).width + paddingX * 2 > maxWidth && displayText.length > 4) {
+      displayText = displayText.slice(0, -2) + '…';
+    }
+
+    const textWidth = ctx.measureText(displayText).width;
+    const boxW = textWidth + paddingX * 2;
+    const boxH = lineHeight + paddingY * 2;
+
+    // 优先画在框上方，空间不足则放在框内
+    let boxY = y - boxH;
+    if (boxY < 0) boxY = y;
+    let boxX = Math.max(0, Math.min(canvas.width - boxW, x));
+
+    ctx.fillStyle = color;
+    ctx.globalAlpha = .92;
+    ctx.fillRect(boxX, boxY, boxW, boxH);
+
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(displayText, boxX + paddingX, boxY + boxH / 2);
+    ctx.restore();
+  }
+
+  function drawDetections(detections) {
+    if (!image) throw new Error('请先上传图片。');
+
+    drawBaseImage();
+    const mode = resolveMode(detections);
+    const lineWidth = Math.max(3, Math.round(canvas.width / 600));
+
+    detections.forEach((det, index) => {
+      const [left, top, right, bottom] = mapBBox(det.bbox_2d, mode);
+      const width = right - left;
+      const height = bottom - top;
+
+      if (width <= 0 || height <= 0) return;
+
+      const color = colorForState(det.state);
+
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth;
+      ctx.strokeRect(left, top, width, height);
+      ctx.restore();
+
+      const parts = [
+        det.label || `目标${index + 1}`,
+        det.state ? `状态: ${det.state}` : null,
+        `置信度: ${confidenceText(det.confidence)}`
+      ].filter(Boolean);
+
+      drawLabel(parts.join(' | '), left, top, color);
+    });
+
+    currentDetections = detections;
+    boxInfo.textContent = `识别框：${detections.length}`;
+    modeInfo.textContent = `坐标：${mode === 'qwen' ? 'Qwen 0~1000' : '原图像素'}`;
+    downloadBtn.disabled = false;
+    return mode;
+  }
+
+  imageInput.addEventListener('change', () => {
+    const file = imageInput.files && imageInput.files[0];
+    if (!file) return;
+
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+
+    img.onload = () => {
+      if (image && image.src && image.src.startsWith('blob:')) URL.revokeObjectURL(image.src);
+
+      image = img;
+      imageFileName = (file.name.replace(/\.[^.]+$/, '') || 'image') + '_annotated.png';
+
+      drawBaseImage();
+      canvas.style.display = 'block';
+      emptyState.style.display = 'none';
+
+      imageInfo.textContent = `图片：${img.naturalWidth} × ${img.naturalHeight}`;
+      boxInfo.textContent = '识别框：0';
+      downloadBtn.disabled = false;
+      setStatus('图片加载成功。请粘贴识别串并点击“绘制识别结果”。', 'ok');
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      setStatus('图片加载失败，请更换文件。', 'error');
+    };
+
+    img.src = url;
+  });
+
+  renderBtn.addEventListener('click', () => {
+    try {
+      if (!image) throw new Error('请先上传图片。');
+      const parsed = parseDetections(jsonInput.value);
+      const mode = drawDetections(parsed.detections);
+      setStatus(
+        `绘制完成：${parsed.detections.length} 个识别框。\n` +
+        `解析方式：${parsed.parser}；坐标方式：${mode === 'qwen' ? 'Qwen 0~1000' : '原图像素'}。`,
+        'ok'
+      );
+    } catch (err) {
+      setStatus(err.message || String(err), 'error');
+    }
+  });
+
+  clearBtn.addEventListener('click', () => {
+    if (!image) {
+      setStatus('当前没有图片。');
+      return;
+    }
+    drawBaseImage();
+    currentDetections = [];
+    boxInfo.textContent = '识别框：0';
+    setStatus('已清除识别框，保留原图。', 'ok');
+  });
+
+  demoBtn.addEventListener('click', () => {
+    jsonInput.value = `[
+  {
+    "bbox_2d": [64, 46, 250, 477],
+    "label": "显示器屏",
+    "state": "正常"
+  },
+  {
+    "bbox_2d": [336, 89, 452, 429],
+    "label": "显示器屏",
+    "state": "正常"
+  },
+  {
+    "bbox_2d": [546, 117, 612, 424],
+    "label": "显示器屏",
+    "state": "正常"
+  },
+  {
+    "bbox_2d": [664, 128, 710, 402],
+    "label": "显示器屏",
+    "state": "正常"
+  },
+  {
+    "bbox_2d": [750, 140, 775, 388],
+    "label": "显示器屏",
+    "state": "正常"
+  }
+]`;
+    setStatus('已填入示例识别串。');
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!image) return;
+    canvas.toBlob(blob => {
+      if (!blob) {
+        setStatus('导出失败。', 'error');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = imageFileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, 'image/png');
+  });
+
+  coordMode.addEventListener('change', () => {
+    const labels = {
+      qwen: 'Qwen 0~1000',
+      pixel: '原图像素',
+      auto: '自动判断'
+    };
+    modeInfo.textContent = `坐标：${labels[coordMode.value]}`;
+
+    if (image && currentDetections.length > 0) {
+      try {
+        drawDetections(currentDetections);
+      } catch (_) {}
+    }
+  });
+})();
+</script>
+</body>
+</html>

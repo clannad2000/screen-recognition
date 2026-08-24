@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>显示器屏幕状态识别</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #d1d5db;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --danger: #dc2626;
+      --success: #16a34a;
+      --blue-screen: #2563eb;
+      --sticker: #d97706;
+      --shadow: 0 8px 28px rgba(15, 23, 42, .08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .app {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    h1 { margin: 0 0 6px; font-size: 26px; }
+    .sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 58px;
+      padding: 16px 18px;
+      border-bottom: 1px solid #e5e7eb;
+      font-weight: 700;
+    }
+
+    .panel-body { padding: 18px; }
+    .field { margin-bottom: 18px; }
+    .field:last-child { margin-bottom: 0; }
+    label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 700; }
+
+    .upload-box {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-height: 150px;
+      padding: 22px;
+      border: 2px dashed #cbd5e1;
+      border-radius: 10px;
+      background: #f8fafc;
+      text-align: center;
+      transition: .18s ease;
+    }
+
+    .upload-box:hover, .upload-box.dragging {
+      border-color: var(--primary);
+      background: #eff6ff;
+    }
+
+    .upload-box input {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    .upload-icon { font-size: 30px; line-height: 1; }
+    .upload-title { margin-top: 10px; font-size: 15px; font-weight: 700; }
+    .hint { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+    .state-legend { display: flex; flex-wrap: wrap; gap: 8px; }
+    .state-chip, .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: #f3f4f6;
+      color: #4b5563;
+      font-size: 12px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    .normal { color: var(--success); }
+    .blue { color: var(--blue-screen); }
+    .black { color: var(--danger); }
+    .sticker { color: var(--sticker); }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.primary { flex: 1; min-width: 140px; background: var(--primary); color: #fff; }
+    button.primary:hover { background: var(--primary-hover); }
+    button.ghost { background: #f3f4f6; color: #374151; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      margin-right: 7px;
+      border: 2px solid rgba(255,255,255,.45);
+      border-top-color: #fff;
+      border-radius: 50%;
+      vertical-align: -2px;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .status {
+      margin-top: 14px;
+      min-height: 42px;
+      padding: 10px 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #f8fafc;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .status.error { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+    .status.ok { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
+
+    .results { margin-top: 18px; }
+    .result-list { display: grid; gap: 8px; }
+    .result-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 5px 12px;
+      padding: 10px 12px;
+      border: 1px solid #e5e7eb;
+      border-left: 4px solid var(--item-color, var(--primary));
+      border-radius: 8px;
+      background: #fff;
+      font-size: 13px;
+    }
+    .result-id { font-weight: 800; }
+    .result-state { color: var(--item-color, var(--primary)); font-weight: 700; }
+    .result-box { grid-column: 1 / -1; color: var(--muted); font: 12px ui-monospace, monospace; }
+    .result-empty { color: var(--muted); font-size: 13px; }
+
+    details { margin-top: 14px; border-top: 1px solid #e5e7eb; padding-top: 12px; }
+    summary { color: #4b5563; font-size: 13px; font-weight: 700; cursor: pointer; }
+    textarea {
+      width: 100%;
+      min-height: 170px;
+      margin-top: 10px;
+      padding: 10px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #f8fafc;
+      color: var(--text);
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .canvas-wrap {
+      padding: 16px;
+      min-height: 590px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background:
+        linear-gradient(45deg,#f8fafc 25%,transparent 25%),
+        linear-gradient(-45deg,#f8fafc 25%,transparent 25%),
+        linear-gradient(45deg,transparent 75%,#f8fafc 75%),
+        linear-gradient(-45deg,transparent 75%,#f8fafc 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+    canvas {
+      display: none;
+      max-width: 100%;
+      max-height: 78vh;
+      border-radius: 6px;
+      box-shadow: 0 2px 14px rgba(15,23,42,.12);
+      background: #fff;
+    }
+    .empty { color: var(--muted); text-align: center; padding: 80px 20px; line-height: 1.8; }
+    .summary { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-top: 1px solid #e5e7eb; }
+    .model-name { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    @media (max-width: 980px) {
+      .app { padding: 16px; }
+      .grid { grid-template-columns: 1fr; }
+      .canvas-wrap { min-height: 380px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1>显示器屏幕状态识别</h1>
+    <p class="sub">上传图片后由多模态模型自动识别显示器屏幕，并标注正常、蓝屏、黑屏或贴纸状态。</p>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-header"><span>识别设置</span><span class="badge">Qwen 坐标 0~1000</span></div>
+        <div class="panel-body">
+          <div class="field">
+            <label for="imageInput">1. 上传待识别图片</label>
+            <div id="uploadBox" class="upload-box">
+              <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp" />
+              <div>
+                <div class="upload-icon">🖼️</div>
+                <div id="uploadTitle" class="upload-title">点击选择或拖入图片</div>
+                <div class="hint">支持 JPG、PNG、WebP，单张不超过 10 MB</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>2. 识别范围</label>
+            <div class="hint">仅识别图片中的显示器屏幕，不标注机柜、按钮、键盘或其他物体。</div>
+          </div>
+
+          <div class="field">
+            <label>3. 屏幕状态</label>
+            <div class="state-legend">
+              <span class="state-chip normal"><i class="dot"></i>正常</span>
+              <span class="state-chip blue"><i class="dot"></i>蓝屏</span>
+              <span class="state-chip black"><i class="dot"></i>黑屏</span>
+              <span class="state-chip sticker"><i class="dot"></i>贴纸</span>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button id="recognizeBtn" class="primary" disabled>开始 AI 识别</button>
+            <button id="clearBtn" class="ghost" disabled>清除结果</button>
+            <button id="downloadBtn" class="ghost" disabled>下载标注图</button>
+          </div>
+          <div id="status" class="status">请先上传图片。</div>
+
+          <div class="results">
+            <label>识别结果</label>
+            <div id="resultList" class="result-list">
+              <div class="result-empty">识别完成后将在这里显示屏幕 ID、状态和置信度。</div>
+            </div>
+          </div>
+
+          <details>
+            <summary>查看模型 JSON（只读）</summary>
+            <textarea id="jsonOutput" readonly spellcheck="false" placeholder="识别完成后显示标准 JSON"></textarea>
+          </details>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><span>标注结果</span><span id="headerState" class="badge">等待上传</span></div>
+        <div class="canvas-wrap">
+          <div id="emptyState" class="empty">上传图片后会在这里显示预览。<br />点击“开始 AI 识别”自动获取并绘制识别框。</div>
+          <canvas id="canvas"></canvas>
+        </div>
+        <div class="summary">
+          <span id="imageInfo" class="badge">图片：未加载</span>
+          <span id="boxInfo" class="badge">显示器屏幕：0</span>
+          <span id="modelInfo" class="badge model-name">模型：未调用</span>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      const imageInput = document.getElementById('imageInput');
+      const uploadBox = document.getElementById('uploadBox');
+      const uploadTitle = document.getElementById('uploadTitle');
+      const recognizeBtn = document.getElementById('recognizeBtn');
+      const clearBtn = document.getElementById('clearBtn');
+      const downloadBtn = document.getElementById('downloadBtn');
+      const statusEl = document.getElementById('status');
+      const resultList = document.getElementById('resultList');
+      const jsonOutput = document.getElementById('jsonOutput');
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+      const emptyState = document.getElementById('emptyState');
+      const imageInfo = document.getElementById('imageInfo');
+      const boxInfo = document.getElementById('boxInfo');
+      const modelInfo = document.getElementById('modelInfo');
+      const headerState = document.getElementById('headerState');
+
+      const COLORS = {
+        '正常': '#16a34a',
+        '蓝屏': '#2563eb',
+        '黑屏': '#dc2626',
+        '贴纸': '#d97706'
+      };
+      const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+      const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+      let image = null;
+      let imageDataUrl = '';
+      let imageFileName = 'annotated.png';
+      let detections = [];
+      let recognizing = false;
+
+      function setStatus(message, type = '') {
+        statusEl.textContent = message;
+        statusEl.className = 'status' + (type ? ` ${type}` : '');
+      }
+
+      function setRecognizing(active) {
+        recognizing = active;
+        recognizeBtn.disabled = active || !image;
+        imageInput.disabled = active;
+        clearBtn.disabled = active || !image;
+        downloadBtn.disabled = active || !image;
+        recognizeBtn.innerHTML = active
+          ? '<span class="spinner"></span>模型识别中…'
+          : '开始 AI 识别';
+        if (active) {
+          headerState.textContent = '正在识别';
+        } else if (!image) {
+          headerState.textContent = '等待上传';
+        } else if (headerState.textContent === '正在识别') {
+          headerState.textContent = '图片已加载';
+        }
+      }
+
+      function loadFile(file) {
+        if (!file) return;
+        if (!ALLOWED_TYPES.has(file.type)) {
+          setStatus('仅支持 JPG、PNG 或 WebP 图片。', 'error');
+          return;
+        }
+        if (file.size > MAX_FILE_BYTES) {
+          setStatus('图片不能超过 10 MB。', 'error');
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onerror = () => setStatus('读取图片失败，请更换文件。', 'error');
+        reader.onload = () => {
+          const img = new Image();
+          img.onerror = () => setStatus('图片内容无效，请更换文件。', 'error');
+          img.onload = () => {
+            image = img;
+            imageDataUrl = String(reader.result);
+            imageFileName = `${file.name.replace(/\.[^.]+$/, '') || 'image'}_annotated.png`;
+            uploadTitle.textContent = file.name;
+            detections = [];
+            drawBaseImage();
+            showResults([]);
+            jsonOutput.value = '';
+            canvas.style.display = 'block';
+            emptyState.style.display = 'none';
+            imageInfo.textContent = `图片：${img.naturalWidth} × ${img.naturalHeight}`;
+            boxInfo.textContent = '显示器屏幕：0';
+            modelInfo.textContent = '模型：未调用';
+            headerState.textContent = '图片已加载';
+            setStatus('图片加载成功，点击“开始 AI 识别”。', 'ok');
+            setRecognizing(false);
+          };
+          img.src = String(reader.result);
+        };
+        reader.readAsDataURL(file);
+      }
+
+      function drawBaseImage() {
+        if (!image) return;
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(image, 0, 0);
+      }
+
+      function mapBBox(bbox) {
+        const [x1, y1, x2, y2] = bbox.map(Number);
+        return [
+          x1 / 1000 * canvas.width,
+          y1 / 1000 * canvas.height,
+          x2 / 1000 * canvas.width,
+          y2 / 1000 * canvas.height
+        ];
+      }
+
+      function drawLabel(text, x, y, color) {
+        const fontSize = Math.max(16, Math.round(canvas.width / 80));
+        const paddingX = Math.max(7, Math.round(fontSize * .45));
+        const paddingY = Math.max(5, Math.round(fontSize * .32));
+        const boxH = Math.round(fontSize * 1.25) + paddingY * 2;
+        ctx.save();
+        ctx.font = `700 ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+        ctx.textBaseline = 'middle';
+        let displayText = text;
+        const maxWidth = Math.max(160, canvas.width - x - 4);
+        while (ctx.measureText(displayText).width + paddingX * 2 > maxWidth && displayText.length > 5) {
+          displayText = displayText.slice(0, -2) + '…';
+        }
+        const boxW = ctx.measureText(displayText).width + paddingX * 2;
+        const boxX = Math.max(0, Math.min(canvas.width - boxW, x));
+        const boxY = y - boxH < 0 ? y : y - boxH;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = .94;
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#fff';
+        ctx.fillText(displayText, boxX + paddingX, boxY + boxH / 2);
+        ctx.restore();
+      }
+
+      function drawDetections(items) {
+        drawBaseImage();
+        const lineWidth = Math.max(3, Math.round(canvas.width / 600));
+        items.forEach(item => {
+          const [left, top, right, bottom] = mapBBox(item.bbox_2d);
+          const color = COLORS[item.state] || '#2563eb';
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = lineWidth;
+          ctx.strokeRect(left, top, right - left, bottom - top);
+          ctx.restore();
+          drawLabel(
+            `${item.id} | 状态: ${item.state} | 置信度: ${Number(item.confidence).toFixed(2)}`,
+            left,
+            top,
+            color
+          );
+        });
+      }
+
+      function showResults(items) {
+        resultList.replaceChildren();
+        if (!items.length) {
+          const empty = document.createElement('div');
+          empty.className = 'result-empty';
+          empty.textContent = image
+            ? '当前没有识别结果。'
+            : '识别完成后将在这里显示屏幕 ID、状态和置信度。';
+          resultList.appendChild(empty);
+          return;
+        }
+        items.forEach(item => {
+          const row = document.createElement('div');
+          row.className = 'result-item';
+          row.style.setProperty('--item-color', COLORS[item.state] || '#2563eb');
+
+          const id = document.createElement('span');
+          id.className = 'result-id';
+          id.textContent = item.id;
+          const state = document.createElement('span');
+          state.className = 'result-state';
+          state.textContent = `${item.state} · ${Number(item.confidence).toFixed(2)}`;
+          const bbox = document.createElement('span');
+          bbox.className = 'result-box';
+          bbox.textContent = `bbox: [${item.bbox_2d.join(', ')}]`;
+          row.append(id, state, bbox);
+          resultList.appendChild(row);
+        });
+      }
+
+      async function recognize() {
+        if (!image || !imageDataUrl || recognizing) return;
+        setRecognizing(true);
+        setStatus('正在上传图片并等待模型分析，通常需要数秒至一分钟…');
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 130000);
+        try {
+          const response = await fetch('/api/recognize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: imageDataUrl }),
+            signal: controller.signal
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || `识别请求失败（HTTP ${response.status}）。`);
+          if (!Array.isArray(data.detections)) throw new Error('服务端返回的 detections 格式无效。');
+
+          detections = data.detections;
+          drawDetections(detections);
+          showResults(detections);
+          jsonOutput.value = JSON.stringify({ detections }, null, 2);
+          boxInfo.textContent = `显示器屏幕：${detections.length}`;
+          modelInfo.textContent = `模型：${data.meta?.model || '已调用'}`;
+          headerState.textContent = detections.length ? '识别完成' : '未发现屏幕';
+          setStatus(
+            detections.length
+              ? `识别完成，共发现 ${detections.length} 个显示器屏幕。`
+              : '识别完成，没有发现符合条件的显示器屏幕。',
+            'ok'
+          );
+        } catch (error) {
+          const message = error.name === 'AbortError'
+            ? '识别请求超时，请稍后重试。'
+            : (error.message || String(error));
+          setStatus(message, 'error');
+          headerState.textContent = '识别失败';
+        } finally {
+          clearTimeout(timeoutId);
+          setRecognizing(false);
+        }
+      }
+
+      imageInput.addEventListener('change', () => loadFile(imageInput.files?.[0]));
+      recognizeBtn.addEventListener('click', recognize);
+      ['dragenter', 'dragover'].forEach(type => uploadBox.addEventListener(type, () => uploadBox.classList.add('dragging')));
+      ['dragleave', 'drop'].forEach(type => uploadBox.addEventListener(type, () => uploadBox.classList.remove('dragging')));
+
+      clearBtn.addEventListener('click', () => {
+        if (!image) return;
+        detections = [];
+        drawBaseImage();
+        showResults([]);
+        jsonOutput.value = '';
+        boxInfo.textContent = '显示器屏幕：0';
+        headerState.textContent = '图片已加载';
+        setStatus('已清除识别结果，保留原图。', 'ok');
+      });
+
+      downloadBtn.addEventListener('click', () => {
+        if (!image) return;
+        canvas.toBlob(blob => {
+          if (!blob) {
+            setStatus('导出标注图片失败。', 'error');
+            return;
+          }
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = imageFileName;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }, 'image/png');
+      });
+    })();
+  </script>
+</body>
+</html>
