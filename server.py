@@ -22,28 +22,507 @@ from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = PROJECT_DIR / "public"
-#DEFAULT_MODEL = "Qwen/Qwen3.6-35B-A3B"
-#API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-DEFAULT_MODEL = "qwen3"
-API_URL = "http://192.168.2.185:18082/v1/chat/completions"
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
-MAX_REQUEST_BYTES = 15 * 1024 * 1024
+CONFIG_PATH = PUBLIC_DIR / "config.json"
+
+# 视频模式以原始分辨率提交无损 PNG，单帧可能显著大于常规图片上传。
+MAX_IMAGE_BYTES = 32 * 1024 * 1024
+MAX_REQUEST_BYTES = 45 * 1024 * 1024
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ALLOWED_STATES = ("正常", "蓝屏", "黑屏", "贴纸")
 
 
-SYSTEM_PROMPT = """你是一个严格的显示器屏幕检测器。分析用户上传的图片，只识别显示器或自助设备上的实际显示屏区域，不要识别机柜、按钮、键盘、插槽、指示灯、纸张本身或其他物体。
+def load_config() -> dict[str, Any]:
+    try:
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"配置文件读取失败: {CONFIG_PATH}") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError("配置文件必须是 JSON 对象。")
+    return config
 
-对每个可见显示屏判断且只能使用以下状态之一：
-- 正常：屏幕正常显示业务界面、桌面、图像或其他有效内容。
-- 蓝屏：屏幕整体呈现系统蓝屏或明显的蓝色故障画面。
-- 黑屏：屏幕关闭、无显示内容或整体近似黑色。
-- 贴纸：屏幕表面被纸张、贴纸或类似 A4 纸的物体覆盖或遮挡。
 
-坐标必须是相对于整张原图的 0 到 1000 归一化坐标，格式为 [x1,y1,x2,y2]，左上角为原点。confidence 必须是 0 到 1 之间的数字。即使没有检测到显示屏，也必须返回 detections 空数组。
+def get_model_config(config: dict[str, Any]) -> dict[str, Any]:
+    usage = str(config.get("model_usage", "")).strip()
+    profiles = config.get("model_profiles")
+    if not usage:
+        raise RuntimeError("配置文件中的 model_usage 未设置。")
+    if not isinstance(profiles, dict) or not isinstance(profiles.get(usage), dict):
+        raise RuntimeError(f"配置文件中不存在模型配置: {usage}")
+    model_config = profiles[usage]
+    for key in ("model", "chat_endpoint"):
+        if not str(model_config.get(key, "")).strip():
+            raise RuntimeError(f"模型配置缺少 {key}: {usage}")
+    if not isinstance(model_config.get("enable_thinking"), bool):
+        raise RuntimeError(f"模型配置 enable_thinking 必须为布尔值: {usage}")
+    max_pixels = model_config.get("max_pixels")
+    if max_pixels is not None and (
+        isinstance(max_pixels, bool) or not isinstance(max_pixels, int) or max_pixels <= 0
+    ):
+        raise RuntimeError(f"模型配置 max_pixels 必须为正整数: {usage}")
+    return model_config
 
-只输出一个 JSON 对象，不要输出 Markdown、解释或额外文字。结构必须为：
+
+ACTIVE_CONFIG: dict[str, Any] | None = None
+
+
+# SYSTEM_PROMPT = """你是一个严格的显示器屏幕检测器。分析用户上传的图片，只识别显示器或自助设备上的实际显示屏区域，不要识别机柜、按钮、键盘、插槽、指示灯、纸张本身或其他物体。
+
+# 对每个可见显示屏判断且只能使用以下状态之一：
+# - 正常：屏幕正常显示业务界面、桌面、图像或其他有效内容。
+# - 蓝屏：屏幕整体呈现系统蓝屏或明显的蓝色故障画面。
+# - 黑屏：屏幕关闭、无显示内容或整体近似黑色。
+# - 贴纸：屏幕表面被纸张、贴纸或类似 A4 纸的物体覆盖或遮挡。
+
+# 坐标必须是相对于整张原图的 0 到 1000 归一化坐标，格式为 [x1,y1,x2,y2]，左上角为原点。confidence 必须是 0 到 1 之间的数字。即使没有检测到显示屏，也必须返回 detections 空数组。
+
+# 只输出一个 JSON 对象，不要输出 Markdown、解释或额外文字。结构必须为：
+# {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
+
+
+# SYSTEM_PROMPT = """你是一个严格的显示屏区域检测器。
+
+# 分析用户上传的图片，只检测摄像头能够实际看到“正面显示区域”的显示器、自助设备屏幕或其他电子显示屏。
+
+# 【检测目标定义】
+# 只有当图片中能够看到显示器的正面屏幕表面（显示面、屏幕玻璃、液晶面板所在区域）时，才允许将其识别为显示屏。
+
+# 以下情况必须排除，不得输出为 detection：
+# - 显示器的背面、后壳或背板；
+# - 屏幕显示面背对摄像头，摄像头只能看到显示器背壳；
+# - 显示器支架、底座、边框、机柜；
+# - 键盘、按钮、插槽、指示灯；
+# - 普通纸张、桌面、墙面或其他矩形物体；
+# - 无法确认看到的是屏幕正面显示区域的疑似目标。
+
+# 特别注意：
+# 显示器背面通常也是黑色或深色矩形，但这不属于“黑屏”。
+# 只有明确能够看到屏幕正面显示面，并且该显示面没有任何有效显示内容、整体近似黑色时，才允许判断为“黑屏”。
+# 如果摄像头只能看到显示器背面，则直接忽略该显示器，不得输出。
+
+# 【状态判断】
+# 对每一个确认可见的“正面屏幕显示区域”，且只能使用以下状态之一：
+
+# - 正常：
+#   屏幕正常显示业务界面、桌面、图像、文字或其他有效内容。
+
+# - 蓝屏：
+#   屏幕正面显示区域整体呈现系统蓝屏或明显的蓝色故障画面。
+
+# - 黑屏：
+#   必须已经确认看到的是屏幕正面显示区域，并且该区域关闭、无显示内容或整体近似黑色。
+#   不得因为显示器背壳、黑色机柜或其他黑色矩形物体而判断为黑屏。
+
+# - 贴纸：
+#   屏幕正面显示区域被纸张、贴纸或类似 A4 纸的物体覆盖或遮挡。
+#   必须能够判断纸张位于屏幕显示区域表面，而不是附近普通纸张。
+
+# 【检测原则】
+# 1. 先判断目标是否为“摄像头可见的屏幕正面显示区域”。
+# 2. 只有满足第 1 条后，才能继续判断正常、蓝屏、黑屏或贴纸。
+# 3. 如果只能看到显示器背面或侧面，直接忽略。
+# 4. 如果无法可靠区分屏幕正面与显示器背面，宁可不检测，不要猜测。
+# 5. bbox 只框选实际屏幕显示区域，尽量不要包含显示器背壳、支架、底座或周围设备。
+
+# 【输出格式】
+# 坐标必须是相对于整张原图的 0 到 1000 归一化坐标，
+# 格式为 [x1,y1,x2,y2]，左上角为原点。
+
+# confidence 必须是 0 到 1 之间的数字。
+
+# 即使没有检测到符合条件的显示屏，也必须返回 detections 空数组。
+
+# 只输出一个 JSON 对象，不要输出 Markdown、解释或额外文字。
+
+# 结构必须为：
+
+# {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
+
+
+# LEGACY_SYSTEM_PROMPT = """你是一个严格的“屏幕正面显示区域检测器”，不是显示器设备检测器。
+
+# 你的任务是检测摄像头能够看到的电子屏幕正面显示区域，并判断显示状态。
+# 只看到显示器设备、显示器背面、后壳或侧面，不属于有效检测目标。
+
+# 【最高优先级资格门槛】
+
+# 每一个输出到 detections 的目标必须同时满足以下全部条件：
+
+# 1. 目标确实是电子显示设备的显示区域；
+# 2. 摄像头能够看到它的正面显示面；
+# 3. 可见区域中不存在明确的显示器背面证据；
+# 4. bbox 对应的是正面显示区域，而不是整个设备、后壳、边框、支架或底座；
+# 5. 能够可靠判断其显示状态。
+
+# 以上任意一项不满足，必须排除，不得输出。
+
+# 可表示为：
+
+# eligible =
+#     is_electronic_display
+#     AND front_display_surface_visible
+#     AND no_backside_evidence
+#     AND state_is_judgable
+
+# 只有 eligible 为 true 的目标才允许进入 detections。
+
+# 【背面否决规则】
+
+# 只要候选目标出现以下任意明确背面特征，直接判定为显示器背面并排除：
+
+# - 可见面上存在资产标签、序列号标签、设备铭牌或背部标签；
+# - 可见面中部存在显示器支架连接结构或 VESA 安装结构；
+# - 可见接口、插孔、线缆连接处或散热孔；
+# - 可见后盖凸起、背板拼接、后壳控制结构；
+# - 显示器屏幕实际朝向工作人员，摄像头看到的是相反一面；
+# - 只能看到显示器背面或侧面，无法看到正面显示玻璃。
+# - 高优先级：疑似黑屏，但其正面缺少玻璃材质的证明。
+
+# 显示器后壳即使整体为黑色，也绝对不属于“黑屏”。
+
+# 一个黑色矩形只有在已经确认它是屏幕正面显示面之后，才可以继续判断是否为黑屏。
+
+# 任何明确的背面证据都具有否决权：
+# 即使该物体外形像显示器、整体呈黑色、位于桌面上，也必须排除。
+
+
+# 【正面显示区域的有效证据】
+
+# 以下特征可以支持目标为正面显示区域：
+
+# - 能看到业务界面、桌面、图像、文字、图标或其他显示像素；
+# - 能看到连续的屏幕玻璃或液晶面板；
+# - 黑色玻璃面位于明确的正面屏幕边框内部；
+# - 自助设备的触摸显示面朝向使用者，并且摄像头能看到该显示面；
+# - 显示平面朝向摄像头或以一定斜角朝向摄像头，状态仍可判断。
+
+# 斜着放置的屏幕可以检测，但只能看到背面或侧面的设备不得检测。
+
+# 【状态判断顺序】
+
+# 必须严格按照以下顺序处理每个候选目标：
+
+# 第一步：判断它是否为电子显示设备；
+# 第二步：判断摄像头看到的是正面、背面、侧面还是无法判断；
+# 第三步：只有明确为正面时，才判断显示状态；
+# 第四步：输出前再次检查是否存在背面证据。
+
+# 禁止跳过正反面判断，直接根据颜色判断状态。
+
+# 【状态定义】
+
+# 每个有效正面显示区域只能使用以下状态之一：
+
+# - 正常：
+#   屏幕显示业务界面、桌面、文字、图标、图像、视频或其他有效内容。
+#   暗色界面或暗色视频仍属于正常，不能仅因整体较暗而判断为黑屏。
+
+# - 蓝屏：
+#   屏幕正面显示区域整体呈现系统蓝屏或明显的蓝色故障画面。
+
+# - 黑屏：
+#   必须已经明确确认看到的是屏幕正面显示面；
+#   该显示面没有有效文字、图像、图标或界面；
+#   显示区域整体近似均匀黑色或处于关闭状态。
+#   黑色后壳、黑色机柜、黑色桌面和普通黑色矩形均不得判断为黑屏。
+
+# - 贴纸：
+#   屏幕正面显示玻璃被纸张、贴纸或类似 A4 纸的物体覆盖。
+#   小型资产标签、设备铭牌或背部标签不属于贴纸状态。
+
+# 如果无法可靠区分正面与背面，或者无法可靠判断状态，直接排除，不得默认判断为黑屏。
+
+# 【反例】
+
+# 反例 1：
+# 黑色矩形表面带有资产标签，中央可见支架连接结构，线缆从后方引出。
+# 结论：显示器背面，必须排除，不得输出为黑屏。
+
+# 反例 2：
+# 黑色矩形位于工作人员与摄像头之间，工作人员位于其另一侧并面向显示器。
+# 同时可见后壳或支架结构。
+# 结论：显示器背面，必须排除。
+
+# 【正例】
+
+# 黑色玻璃面位于自助设备正面边框内部，显示面朝向使用者，摄像头能够看到该显示面，且没有任何显示内容。
+# 结论：可以输出，状态为黑屏。
+
+# 【bbox 规则】
+
+# bbox 必须只框选实际正面显示区域：
+
+
+
+# 坐标必须是相对于整张原图的 0 到 1000 归一化坐标：
+# [x1,y1,x2,y2]，左上角为原点。
+
+# 【confidence 规则】
+
+# confidence 表示以下三项的联合可信程度：
+
+# - 目标确实是显示屏；
+# - 正面显示区域确实可见；
+# - 状态判断正确。
+
+# 【最终输出前强制自检】
+
+# 生成 JSON 前，对每个 detection 依次检查：
+
+# 1. 是否明确看到正面显示面？
+# 2. 是否存在资产标签、后壳、支架连接、接口、散热孔或其他背面证据？
+# 3. bbox 是否包含了后壳、支架或整个设备？
+# 4. 是否只是因为目标呈黑色而判断为黑屏？
+# 5. 是否受到图片中已有检测框、状态文字或 screen 编号影响？
+
+# 如果第 1 项为否，或者第 2、3、4、5 项任一为是，必须删除该 detection。
+
+# 删除无效目标后，再按照从左到右、从上到下的顺序重新分配 id：
+# screen-1、screen-2、screen-3……
+
+# label 必须固定为“显示器屏”，不得输出其他 label 值。
+
+# 即使没有检测到符合条件的显示屏，也必须返回 detections 空数组。
+
+# 只输出一个 JSON 对象，不要输出 Markdown、解释、分析过程或额外文字。
+
+# 输出结构必须严格为：
+
+# {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
+
+
+# SYSTEM_PROMPT = """你是“屏幕正面显示区域检测器”。只检测摄像头实际看见的电子屏幕正面显示区域，不检测整个设备、边框、底座或机柜。
+
+# 【视觉证据优先】
+# 仅根据图片中可见的像素、结构和材质判断；柜台布局、工作人员位置或设备通常的摆放方向只能辅助判断，不能单独作为正面或背面的结论。
+
+# 输出一个目标前，先判断可见面：
+# - 正面证据：可见界面、文字、图标或图像；可见屏幕玻璃/液晶面板；或黑色/暗色面位于明确的正面边框内（自助设备的嵌入式触摸屏也属于此类）。
+# - 背面证据：可见资产标签、铭牌、接口、线缆连接、散热孔、VESA/支架连接、后盖拼接或后壳控制结构。
+# - 有任一明确背面证据即排除。没有明确背面证据且具有正面证据时，可作为正面屏幕；不要因空间关系猜测为背面。
+# - 正反面都无法从图中判断时排除。
+
+# 只为已确认的正面屏幕判断状态：
+# - 正常：可见任何有效界面、文字、图标、图像或视频；暗色界面仍是正常。
+# - 蓝屏：可见明显蓝色系统故障画面。
+# - 黑屏：正面屏幕无有效显示内容，且显示面整体近似均匀黑/暗。黑色后壳、桌面和普通矩形绝不是黑屏。
+# - 贴纸：纸张或贴纸覆盖在正面显示区域上；背部小标签不属于贴纸。
+# 状态无法判断时排除。
+
+# bbox 只能框实际显示区域，使用原图 0–1000 归一化 [x1,y1,x2,y2] 坐标。confidence 是“正面 + 状态”联合置信度；任一项有不确定性时不得超过 0.75。删除无效目标后按从上到下、同一行从左到右重新编号 screen-1、screen-2……；label 固定为“显示器屏”。
+
+# 只输出一个 JSON 对象，不要输出解释：
+# {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
+
+
+
+# SYSTEM_PROMPT = """你是一个严格的显示器屏幕检测器。分析用户上传的图片，只识别显示器或自助设备上的实际显示屏区域，不要识别机柜、按钮、键盘、插槽、指示灯、纸张本身或其他物体。
+
+# 对每个可见显示屏判断且只能使用以下状态之一：
+# - 正常：屏幕正常显示业务界面、桌面、图像或其他有效内容。
+# - 蓝屏：屏幕整体呈现系统蓝屏或明显的蓝色故障画面。
+# - 黑屏：屏幕关闭、无显示内容或整体近似黑色。
+# - 贴纸：屏幕表面被纸张、贴纸或类似 A4 纸的物体覆盖或遮挡。
+
+# 坐标必须是相对于整张原图的 0 到 1000 归一化坐标，格式为 [x1,y1,x2,y2]，左上角为原点。confidence 必须是 0 到 1 之间的数字。即使没有检测到显示屏，也必须返回 detections 空数组。
+
+# 只输出一个 JSON 对象，不要输出 Markdown、解释或额外文字。结构必须为：
+# {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
+
+
+# SYSTEM_PROMPT = """你是一个严格的显示屏区域检测器。
+
+# 分析用户上传的图片，只检测摄像头能够实际看到“正面显示区域”的显示器、自助设备屏幕或其他电子显示屏。
+
+# 【检测目标定义】
+# 只有当图片中能够看到显示器的正面屏幕表面（显示面、屏幕玻璃、液晶面板所在区域）时，才允许将其识别为显示屏。
+
+# 以下情况必须排除，不得输出为 detection：
+# - 显示器的背面、后壳或背板；
+# - 屏幕显示面背对摄像头，摄像头只能看到显示器背壳；
+# - 显示器支架、底座、边框、机柜；
+# - 键盘、按钮、插槽、指示灯；
+# - 普通纸张、桌面、墙面或其他矩形物体；
+# - 无法确认看到的是屏幕正面显示区域的疑似目标。
+
+# 特别注意：
+# 显示器背面通常也是黑色或深色矩形，但这不属于“黑屏”。
+# 只有明确能够看到屏幕正面显示面，并且该显示面没有任何有效显示内容、整体近似黑色时，才允许判断为“黑屏”。
+# 如果摄像头只能看到显示器背面，则直接忽略该显示器，不得输出。
+
+# 【状态判断】
+# 对每一个确认可见的“正面屏幕显示区域”，且只能使用以下状态之一：
+
+# - 正常：
+#   屏幕正常显示业务界面、桌面、图像、文字或其他有效内容。
+
+# - 蓝屏：
+#   屏幕正面显示区域整体呈现系统蓝屏或明显的蓝色故障画面。
+
+# - 黑屏：
+#   必须已经确认看到的是屏幕正面显示区域，并且该区域关闭、无显示内容或整体近似黑色。
+#   不得因为显示器背壳、黑色机柜或其他黑色矩形物体而判断为黑屏。
+
+# - 贴纸：
+#   屏幕正面显示区域被纸张、贴纸或类似 A4 纸的物体覆盖或遮挡。
+#   必须能够判断纸张位于屏幕显示区域表面，而不是附近普通纸张。
+
+# 【检测原则】
+# 1. 先判断目标是否为“摄像头可见的屏幕正面显示区域”。
+# 2. 只有满足第 1 条后，才能继续判断正常、蓝屏、黑屏或贴纸。
+# 3. 如果只能看到显示器背面或侧面，直接忽略。
+# 4. 如果无法可靠区分屏幕正面与显示器背面，宁可不检测，不要猜测。
+# 5. bbox 只框选实际屏幕显示区域，尽量不要包含显示器背壳、支架、底座或周围设备。
+
+# 【输出格式】
+# 坐标必须是相对于整张原图的 0 到 1000 归一化坐标，
+# 格式为 [x1,y1,x2,y2]，左上角为原点。
+
+# confidence 必须是 0 到 1 之间的数字。
+
+# 即使没有检测到符合条件的显示屏，也必须返回 detections 空数组。
+
+# 只输出一个 JSON 对象，不要输出 Markdown、解释或额外文字。
+
+# 结构必须为：
+
+# {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
+
+
+SYSTEM_PROMPT = """你是一个严格的“屏幕正面显示区域检测器”，不是显示器设备检测器。
+
+你的任务是检测摄像头能够看到的电子屏幕正面显示区域，并判断显示状态。 只看到显示器设备、显示器背面、后壳或侧面，不属于有效检测目标。
+
+【最高优先级资格门槛】
+
+每一个输出到 detections 的目标必须同时满足以下全部条件：
+
+目标确实是电子显示设备的显示区域；
+摄像头能够看到它的正面显示面；
+可见区域中不存在明确的显示器背面证据；
+bbox 对应的是正面显示区域，而不是整个设备、后壳、边框、支架或底座；
+能够可靠判断其显示状态。
+以上任意一项不满足，必须排除，不得输出。
+
+可表示为：
+
+eligible = is_electronic_display AND front_display_surface_visible AND no_backside_evidence AND state_is_judgable
+
+只有 eligible 为 true 的目标才允许进入 detections。
+
+【背面否决规则】
+
+只要候选目标出现以下任意明确背面特征，直接判定为显示器背面并排除：
+可见面上存在资产标签、序列号标签、设备铭牌或背部标签；
+可见面中部存在显示器支架连接结构或 VESA 安装结构；
+可见接口、插孔、线缆连接处或散热孔；
+可见后盖凸起、背板拼接、后壳控制结构；
+只能看到显示器背面或侧面，无法看到正面显示玻璃。
+显示器后壳即使整体为黑色，也绝对不属于“黑屏”。
+
+一个黑色矩形只有在已经确认它是屏幕正面显示面之后，才可以继续判断是否为黑屏。
+
+任何明确的背面证据都具有否决权： 即使该物体外形像显示器、整体呈黑色、位于桌面上，也必须排除。
+
+【正面显示区域的有效证据】
+
+以下特征可以支持目标为正面显示区域：
+
+能看到业务界面、桌面、图像、文字、图标或其他显示像素；
+能看到连续的屏幕玻璃或液晶面板；
+黑色玻璃面位于明确的正面屏幕边框内部；
+自助设备的触摸显示面朝向使用者，并且摄像头能看到该显示面；
+显示平面朝向摄像头或以一定斜角朝向摄像头，状态仍可判断。
+斜着放置的屏幕可以检测，但只能看到背面或侧面的设备不得检测。
+
+【状态判断顺序】
+
+必须严格按照以下顺序处理每个候选目标：
+
+第一步：判断它是否为电子显示设备； 第二步：判断摄像头看到的是正面、背面、侧面还是无法判断； 第三步：只有明确为正面时，才判断显示状态； 第四步：输出前再次检查是否存在背面证据。
+
+禁止跳过正反面判断，直接根据颜色判断状态。
+
+【状态定义】
+
+每个有效正面显示区域只能使用以下状态之一：
+
+正常： 屏幕显示业务界面、桌面、文字、图标、图像、视频或其他有效内容。 暗色界面或暗色视频仍属于正常，不能仅因整体较暗而判断为黑屏。
+
+蓝屏： 屏幕正面显示区域整体呈现系统蓝屏或明显的蓝色故障画面。
+
+黑屏： 必须已经明确确认看到的是屏幕正面显示面； 该显示面没有有效文字、图像、图标或界面； 显示区域整体近似均匀黑色或处于关闭状态。 黑色后壳、黑色机柜、黑色桌面和普通黑色矩形均不得判断为黑屏。
+
+贴纸： 屏幕正面显示玻璃被纸张、贴纸或类似 A4 纸的物体覆盖。 小型资产标签、设备铭牌或背部标签不属于贴纸状态。
+
+如果无法可靠区分正面与背面，或者无法可靠判断状态，直接排除，不得默认判断为黑屏。
+
+
+【正例】
+
+黑色玻璃面位于自助设备正面边框内部，摄像头能够看到该显示面，且没有任何显示内容。 结论：可以输出，状态为黑屏。
+
+【bbox 规则】
+
+bbox 必须只框选实际正面显示区域：
+
+坐标必须是相对于整张原图的 0 到 1000 归一化坐标： [x1,y1,x2,y2]，左上角为原点。
+
+【confidence 规则】
+
+confidence 表示以下三项的联合可信程度：
+
+目标确实是显示屏；
+正面显示区域确实可见；
+状态判断正确。
+只要其中一项存在明显不确定性，confidence 就不得高于 0.75。
+
+只有正面结构和显示状态都非常明确时，confidence 才可以高于 0.95。
+
+【最终输出前强制自检】
+
+生成 JSON 前，对每个 detection 依次检查：
+
+是否明确看到正面显示面？
+显示面是否存在资产标签、后壳、支架连接、接口、散热孔或其他背面证据？
+是否只是因为目标呈黑色而判断为黑屏？
+是否受到图片中已有检测框、状态文字或 screen 编号影响？
+如果第 1 项为否，或者第 2、3、4、5 项任一为是，必须删除该 detection。
+
+删除无效目标后，再按照从左到右、从上到下的顺序重新分配 id： screen-1、screen-2、screen-3……
+
+label 必须固定为“显示器屏”，不得输出其他 label 值。
+
+即使没有检测到符合条件的显示屏，也必须返回 detections 空数组。
+
+只输出一个 JSON 对象，不要输出 Markdown、解释、分析过程或额外文字。
+
+输出结构必须严格为：
+
 {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
+
+
+# SYSTEM_PROMPT = """你是“屏幕正面显示区域检测器”。只检测摄像头实际看见的电子屏幕正面显示区域，不检测整个设备、边框、底座或机柜。
+
+# 【视觉证据优先】
+# 仅根据图片中可见的像素、结构和材质判断；柜台布局、工作人员位置或设备通常的摆放方向只能辅助判断，不能单独作为正面或背面的结论。
+
+# 输出一个目标前，先判断可见面：
+# - 正面证据：可见界面、文字、图标或图像；可见屏幕玻璃/液晶面板；或黑色/暗色面位于明确的正面边框内（自助设备的嵌入式触摸屏也属于此类）。
+# - 背面证据：可见资产标签、铭牌、接口、线缆连接、散热孔、VESA/支架连接、后盖拼接或后壳控制结构。
+# - 有任一明确背面证据即排除。没有明确背面证据且具有正面证据时，可作为正面屏幕；不要因空间关系猜测为背面。
+# - 正反面都无法从图中判断时排除。
+
+# 只为已确认的正面屏幕判断状态：
+# - 正常：可见任何有效界面、文字、图标、图像或视频；暗色界面仍是正常。
+# - 蓝屏：可见明显蓝色系统故障画面。
+# - 黑屏：正面屏幕无有效显示内容，且显示面整体近似均匀黑/暗。黑色后壳、桌面和普通矩形绝不是黑屏。
+# - 贴纸：纸张或贴纸覆盖在正面显示区域上；背部小标签不属于贴纸。
+# 状态无法判断时排除。
+
+# bbox 只能框实际显示区域，使用原图 0–1000 归一化 [x1,y1,x2,y2] 坐标。confidence 是“正面 + 状态”联合置信度；任一项有不确定性时不得超过 0.75。删除无效目标后按从上到下、同一行从左到右重新编号 screen-1、screen-2……；label 固定为“显示器屏”。
+
+# 只输出一个 JSON 对象，不要输出解释：
+# {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
 
 
 class ServiceError(Exception):
@@ -89,21 +568,36 @@ def parse_image_data(value: Any) -> tuple[str, bytes, str]:
     if not raw:
         raise ServiceError("图片内容为空。")
     if len(raw) > MAX_IMAGE_BYTES:
-        raise ServiceError("图片不能超过 10 MB。", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        raise ServiceError("图片不能超过 32 MB。", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
 
     canonical_data_url = f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
     return mime_type, raw, canonical_data_url
 
 
 def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
-    api_key = os.environ.get("SILICONFLOW_API_KEY", "").strip()
-    if not api_key:
+    if ACTIVE_CONFIG is None:
+        raise ServiceError("服务尚未加载模型配置。", HTTPStatus.SERVICE_UNAVAILABLE)
+
+    model_config = get_model_config(ACTIVE_CONFIG)
+    api_keys = ACTIVE_CONFIG.get("api_keys", {})
+    api_key_name = str(model_config.get("api_key_name", "")).strip()
+    api_key = str(api_keys.get(api_key_name, "")).strip() if isinstance(api_keys, dict) else ""
+    if api_key_name and not api_key:
         raise ServiceError(
-            "服务端尚未配置 SILICONFLOW_API_KEY。",
+            f"配置文件尚未配置 {api_key_name} 的 API Key。",
             HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    model = os.environ.get("SILICONFLOW_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    model = str(model_config["model"]).strip()
+    api_url = str(model_config["chat_endpoint"]).strip()
+    image_part = {
+        "type": "image_url",
+        "image_url": {"url": image_data_url},
+    }
+    # 百炼使用多模态内容项上的 max_pixels 控制图像输入分辨率。
+    # 不使用 OpenAI 专有的 image_url.detail，避免该字段被兼容接口忽略。
+    if (max_pixels := model_config.get("max_pixels")) is not None:
+        image_part["max_pixels"] = max_pixels
     payload = {
         "model": model,
         "messages": [
@@ -111,10 +605,7 @@ def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": image_data_url, "detail": "high"},
-                    },
+                    image_part,
                     {
                         "type": "text",
                         "text": "检测这张图片中的所有显示器屏幕，并严格按指定 JSON 结构返回。",
@@ -124,24 +615,68 @@ def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
-        "max_tokens": 2048,
+        # "max_tokens": 2048,
         "stream": False,
     }
 
+    # `enable_thinking` is the shared profile setting.  Most compatible
+    # endpoints accept that top-level field; DeepSeek uses `thinking.type`.
+    enable_thinking = model_config["enable_thinking"]
+    provider = str(model_config.get("provider", "")).strip().lower()
+    if provider == "deepseek":
+        payload["thinking"] = {
+            "type": "enabled" if enable_thinking else "disabled",
+        }
+    else:
+        payload["enable_thinking"] = enable_thinking
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     request = urllib.request.Request(
-        API_URL,
+        api_url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
 
+    # ── 请求日志 ──────────────────────────────────────────────────────────────
+    log_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+    # 将 image_url 内容截断，避免巨量 base64 刷屏
+    try:
+        for msg in log_payload.get("messages", []):
+            if isinstance(msg.get("content"), list):
+                for part in msg["content"]:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        url_val = part.get("image_url", {}).get("url", "")
+                        if len(url_val) > 80:
+                            part["image_url"]["url"] = url_val[:60] + f"...[{len(url_val)} chars]"
+    except Exception:
+        pass
+    print(json.dumps({
+        "event": "model_request",
+        "url": api_url,
+        "payload": log_payload,
+    }, ensure_ascii=False), flush=True)
+    # ─────────────────────────────────────────────────────────────────────────
+
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
-            upstream = json.loads(response.read().decode("utf-8"))
+            raw_response = response.read().decode("utf-8")
+            upstream = json.loads(raw_response)
+
+    # ── 响应日志 ──────────────────────────────────────────────────────────────
+        print(json.dumps({
+            "event": "model_response",
+            "url": api_url,
+            "status": 200,
+            "body": upstream,
+        }, ensure_ascii=False), flush=True)
+    # ─────────────────────────────────────────────────────────────────────────
     except urllib.error.HTTPError as exc:
         error_text = exc.read(4096).decode("utf-8", errors="replace")
         if exc.code in (401, 403):
@@ -152,13 +687,26 @@ def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
             message = "模型服务暂时繁忙，请稍后重试。"
         else:
             message = f"模型服务调用失败（HTTP {exc.code}）。"
-        print(f"SiliconFlow error {exc.code}: {error_text}", file=sys.stderr)
+        print(json.dumps({
+            "event": "model_error",
+            "url": api_url,
+            "status": exc.code,
+            "error": error_text,
+        }, ensure_ascii=False), file=sys.stderr, flush=True)
         raise ServiceError(message, HTTPStatus.BAD_GATEWAY) from exc
     except urllib.error.URLError as exc:
-        print(f"SiliconFlow connection error: {exc}", file=sys.stderr)
+        print(json.dumps({
+            "event": "model_error",
+            "url": api_url,
+            "error": str(exc),
+        }, ensure_ascii=False), file=sys.stderr, flush=True)
         raise ServiceError("无法连接模型服务，请检查网络后重试。", HTTPStatus.BAD_GATEWAY) from exc
     except (TimeoutError, json.JSONDecodeError) as exc:
-        print(f"SiliconFlow response error: {exc}", file=sys.stderr)
+        print(json.dumps({
+            "event": "model_error",
+            "url": api_url,
+            "error": str(exc),
+        }, ensure_ascii=False), file=sys.stderr, flush=True)
         raise ServiceError("模型服务响应超时或格式异常。", HTTPStatus.BAD_GATEWAY) from exc
 
     try:
@@ -291,8 +839,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_json(
                 {
                     "ok": True,
-                    "model": os.environ.get("SILICONFLOW_MODEL", DEFAULT_MODEL),
-                    "apiKeyConfigured": bool(os.environ.get("SILICONFLOW_API_KEY", "").strip()),
+                    "model": get_model_config(ACTIVE_CONFIG)["model"] if ACTIVE_CONFIG else None,
+                    "apiKeyConfigured": bool(
+                        ACTIVE_CONFIG
+                        and str(
+                            ACTIVE_CONFIG.get("api_keys", {}).get(
+                                get_model_config(ACTIVE_CONFIG).get("api_key_name", ""), ""
+                            )
+                        ).strip()
+                    ),
                 }
             )
             return
@@ -368,12 +923,17 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000, help="监听端口，默认 8000")
     args = parser.parse_args()
 
+    global ACTIVE_CONFIG
     load_dotenv(PROJECT_DIR / ".env")
+    ACTIVE_CONFIG = load_config()
+    model_config = get_model_config(ACTIVE_CONFIG)
     server = ThreadingHTTPServer((args.host, args.port), RequestHandler)
     print(f"Screen recognition service: http://{args.host}:{args.port}")
-    print(f"Model: {os.environ.get('SILICONFLOW_MODEL', DEFAULT_MODEL)}")
+    print(f"Model: {model_config['model']}")
     print(
-        "API key: configured" if os.environ.get("SILICONFLOW_API_KEY", "").strip() else "API key: NOT configured"
+        "API key: configured"
+        if str(ACTIVE_CONFIG.get("api_keys", {}).get(model_config.get("api_key_name", ""), "")).strip()
+        else "API key: NOT configured"
     )
     try:
         server.serve_forever()

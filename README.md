@@ -79,4 +79,4 @@ Content-Type: application/json
 }
 ```
 
-支持 JPG、PNG、WebP，图片上限为 10 MB。API Key 仅由后端读取，不会发送到浏览器。
+支持 JPG、PNG、WebP，图片上限为 32 MB。API Key 仅由后端读取，不会发送到浏览器。
