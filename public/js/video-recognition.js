@@ -105,6 +105,8 @@ class VideoRecognitionController {
   }
 
   reset() {
+    // 使正在返回的旧请求结果失效，避免其在重置后重新绘制。
+    this.sessionId++;
     this.stop();
     this.tracker.reset();
     this.events = [];
@@ -157,7 +159,11 @@ class VideoRecognitionController {
     try {
       this._setAiStatus(`第 ${roundNumber} 轮识别中…`);
       const frame  = this.frameSampler.capture();
-      const result = await RecognitionApi.recognize(frame.imageDataUrl, abortController.signal);
+      const result = await RecognitionApi.recognize(
+        frame.imageDataUrl,
+        this.config.modelProfile,
+        abortController.signal,
+      );
 
       // session 检查：防止旧请求污染新 session
       if (capturedSession !== this.sessionId) return;
@@ -274,7 +280,11 @@ class VideoRecognitionController {
       ctx.restore();
 
       // 标签文本
-      let label = `${track.id} | ${track.confirmedState ?? '初始化中'}`;
+      const confidence = Number(track.latestConfidence);
+      const confidenceLabel = Number.isFinite(confidence)
+        ? ` | 置信度: ${(confidence * 100).toFixed(0)}%`
+        : '';
+      let label = `${track.id} | ${track.confirmedState ?? '初始化中'}${confidenceLabel}`;
       if (track.candidateState && track.candidateState !== track.confirmedState) {
         label += ` → ${track.candidateState} ${track.candidateCount}/${this.config.confirmCount}`;
       }

@@ -41,8 +41,8 @@ def load_config() -> dict[str, Any]:
     return config
 
 
-def get_model_config(config: dict[str, Any]) -> dict[str, Any]:
-    usage = str(config.get("model_usage", "")).strip()
+def get_model_config(config: dict[str, Any], profile_name: str | None = None) -> dict[str, Any]:
+    usage = str(profile_name or config.get("model_usage", "")).strip()
     profiles = config.get("model_profiles")
     if not usage:
         raise RuntimeError("配置文件中的 model_usage 未设置。")
@@ -52,14 +52,37 @@ def get_model_config(config: dict[str, Any]) -> dict[str, Any]:
     for key in ("model", "chat_endpoint"):
         if not str(model_config.get(key, "")).strip():
             raise RuntimeError(f"模型配置缺少 {key}: {usage}")
-    if not isinstance(model_config.get("enable_thinking"), bool):
-        raise RuntimeError(f"模型配置 enable_thinking 必须为布尔值: {usage}")
     max_pixels = model_config.get("max_pixels")
     if max_pixels is not None and (
         isinstance(max_pixels, bool) or not isinstance(max_pixels, int) or max_pixels <= 0
     ):
         raise RuntimeError(f"模型配置 max_pixels 必须为正整数: {usage}")
     return model_config
+
+
+def get_public_model_profiles(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return selectable model profiles without exposing credentials or endpoints."""
+    profiles = config.get("model_profiles")
+    if not isinstance(profiles, dict):
+        raise RuntimeError("配置文件中的 model_profiles 必须是对象。")
+
+    available_profiles: list[dict[str, Any]] = []
+    for profile_name in profiles:
+        try:
+            model_config = get_model_config(config, profile_name)
+        except RuntimeError:
+            continue
+        api_key_env, api_key = get_model_api_key(model_config)
+        available_profiles.append(
+            {
+                "id": profile_name,
+                "model": model_config["model"],
+                "provider": str(model_config.get("provider", "")).strip(),
+                "requiresApiKey": bool(api_key_env),
+                "apiKeyConfigured": bool(api_key) if api_key_env else True,
+            }
+        )
+    return available_profiles
 
 
 ACTIVE_CONFIG: dict[str, Any] | None = None
@@ -387,6 +410,9 @@ ACTIVE_CONFIG: dict[str, Any] | None = None
 
 # {"detections":[{"id":"screen-1","bbox_2d":[x1,y1,x2,y2],"label":"显示器屏","state":"正常","confidence":0.95}]}"""
 
+#该图片中存在疑似蓝屏状态的显示器，如果你也找到疑似蓝屏状态的显示器，则判定该显示器为蓝屏状态.
+#该图片中存在疑似朝背面的显示器，如果你也找到疑似朝背面的显示器，则将其排除.
+#该图片中存在疑似被非贴纸物体挡住的显示器，如果该显示器导致你对状态识别困难，则将其排除.
 
 SYSTEM_PROMPT = """你是一个严格的“屏幕正面显示区域检测器”，不是显示器设备检测器。
 
@@ -442,19 +468,192 @@ eligible = is_electronic_display AND front_display_surface_visible AND no_backsi
 
 禁止跳过正反面判断，直接根据颜色判断状态。
 
-【状态定义】
+## 【状态判断最高优先级规则】
 
-每个有效正面显示区域只能使用以下状态之一：
+状态判断不是并列分类，必须按照以下优先级执行：
 
-正常： 屏幕显示业务界面、桌面、文字、图标、图像、视频或其他有效内容。 暗色界面或暗色视频仍属于正常，不能仅因整体较暗而判断为黑屏。
+**贴纸 > 蓝屏 > 黑屏 > 正常**
 
-蓝屏： 屏幕正面显示区域整体呈现系统蓝屏或明显的蓝色故障画面。
+一旦已经满足更高优先级状态的条件，不允许因为同时存在低优先级状态的特征而修改结果。
 
-黑屏： 必须已经明确确认看到的是屏幕正面显示面； 该显示面没有有效文字、图像、图标或界面； 显示区域整体近似均匀黑色或处于关闭状态。 黑色后壳、黑色机柜、黑色桌面和普通黑色矩形均不得判断为黑屏。
+特别注意：
 
-贴纸： 屏幕正面显示玻璃被纸张、贴纸或类似 A4 纸的物体覆盖。 小型资产标签、设备铭牌或背部标签不属于贴纸状态。
+**屏幕存在正常业务界面，与屏幕被纸张覆盖并不冲突。**
 
-如果无法可靠区分正面与背面，或者无法可靠判断状态，直接排除，不得默认判断为黑屏。
+例如：
+
+屏幕 70% 区域正常显示业务界面，30% 区域被白纸遮挡：
+
+必须判断为：
+
+```
+贴纸
+```
+
+不得判断为：
+
+```
+正常
+```
+
+------
+
+## 【第一优先级：贴纸 / 纸张遮挡】
+
+首先检查屏幕正面是否存在覆盖在显示玻璃前方的外部实体纸张，包括：
+
+* A4 / A5 纸张；
+* 白纸、打印纸；
+* 通知单、告示纸；
+* 写有文字的纸张；
+* 大型贴纸；
+* 其他明显遮挡屏幕内容的纸质物体。
+
+判断重点是：
+
+**该区域是否为覆盖在屏幕前方的物理实体，而不是屏幕自身显示的内容。**
+
+以下特征支持存在物理纸张：
+
+1. 屏幕内部存在白色、灰白色或浅色的不透明矩形/四边形；
+2. 具有独立的纸张边缘、角点或明显实体轮廓；
+3. 具有轻微倾斜、透视、阴影、折痕、反光或亮度不均；
+4. 原有屏幕内容在纸张边缘处被遮断；
+5. 纸张边缘与业务界面、窗口、按钮、UI 布局不一致；
+6. 屏幕内容仍可从纸张周围看到；
+7. **白色/浅色区域上存在手写或打印的文字、数字、表格、符号、印章等，并且这些内容明显位于实体纸张上；**
+8. **出现“设备故障”“暂停使用”“维修中”等告示文字，同时具有纸张边缘或实体遮挡特征时，是贴纸的强证据。**
+
+不要求纸张覆盖整个屏幕。
+
+只要明确存在外部纸张，并且已经明显遮挡显示区域，即判定为：
+
+`贴纸`
+
+**即使未遮挡区域仍正常显示业务界面、文字、图片或视频，也必须判定为“贴纸”。**
+
+不得因为还能看到正常屏幕内容而判断为“正常”。
+
+---
+
+## 【白纸与白色屏幕内容的区别】
+
+禁止仅凭“白色区域”或“白底有文字”判断为贴纸。
+
+如果白色区域：
+
+* 与屏幕 UI 布局对齐；
+* 文字、按钮、图标、菜单等属于正常数字界面；
+* 明显属于网页、应用窗口、弹窗或系统页面；
+* 与周围显示内容处于同一显示平面；
+
+则属于屏幕显示内容，不属于贴纸。
+
+如果白色区域：
+
+* 像独立物体覆盖在屏幕内容上；
+* 具有纸张边缘、角点、透视、阴影或实体感；
+* 屏幕原有内容在其边缘处被遮断；
+* 边缘与 UI 布局无关；
+* **其上的文字、数字、表格或告示内容呈现为印刷/手写在纸张上的效果；**
+* 明显位于屏幕玻璃前方；
+
+则属于物理纸张，应判定为：
+
+`贴纸`
+
+对于监控画面，由于分辨率、压缩或曝光原因，纸张纹理、折痕和阴影可能不明显。
+
+因此：
+
+**不能因为看不到纸张纹理而否定纸张；同样，纸张上存在文字时，也不能因为“有文字”就认为这是屏幕界面。**
+
+判断核心始终是：
+
+**这些文字位于屏幕像素中，还是位于覆盖屏幕的实体纸张上。**
+
+
+## 【第二优先级：蓝屏】
+
+只有确认不存在纸张或其他实体遮挡之后，才能判断蓝屏。
+
+如果显示区域整体呈现明确的系统蓝屏、蓝色故障界面：
+
+蓝屏是“蓝色系统故障画面”，不能仅根据颜色判断。
+
+满足以下特征时优先判断为“蓝屏”：
+
+1. 屏幕主要区域为连续蓝色背景；
+2. 蓝色背景上存在白色错误信息、诊断信息、系统提示或多行文本；
+3. 缺少正常业务界面的窗口、按钮、菜单、图标等 UI 结构。
+
+特别注意：
+
+蓝屏中的白色错误文字属于故障画面的一部分，
+不能因为“屏幕上有文字”而判断为“正常”。
+
+以下情况不得判断为蓝屏：
+
+- 正常软件使用蓝色背景；
+- 蓝色网页、桌面、视频或业务界面；
+- 蓝色界面中存在明显正常的按钮、菜单、窗口、图标等 UI 结构。
+
+判断重点：
+
+“大面积纯蓝色背景 + 白色故障/诊断文本 + 缺少正常UI”
+=> 蓝屏
+
+“蓝色背景 + 明显正常业务UI”
+=> 正常
+
+
+------
+
+## 【第三优先级：黑屏】
+
+只有确认：
+
+- 正面屏幕可见；
+- 不存在纸张遮挡；
+- 不存在蓝屏；
+- 不存在有效文字、图片、图标、窗口、视频或业务界面；
+- 显示区域整体近似均匀黑色或者处于关闭状态；
+
+才能判断：
+
+```
+state = "黑屏"
+```
+
+不得把显示器后壳、黑色设备、黑色机柜或其他黑色矩形判断为黑屏。
+
+
+## 【第四优先级：正常】
+
+只有同时满足：
+
+- 不存在实体纸张 / 贴纸遮挡；
+- 不是蓝屏；
+- 不是黑屏；
+屏幕显示业务界面、桌面、图像、文字、图标、视频等有效内容。
+
+但以下内容不属于“正常显示内容”：
+- 蓝屏中的错误文字；
+- 系统故障提示文字；
+- 故障诊断信息。
+如果屏幕呈现“大面积蓝色背景 + 白色故障/诊断文字”，
+即使能够清晰看到文字，也应判断为“蓝屏”，不得判断为“正常”。 
+
+
+特别注意：
+
+**“能看到正常界面”不是判定正常的充分条件。**
+
+只要屏幕同时存在明显纸张遮挡，就必须优先判断为：
+
+```
+贴纸
+```
 
 
 【正例】
@@ -478,17 +677,55 @@ confidence 表示以下三项的联合可信程度：
 
 只有正面结构和显示状态都非常明确时，confidence 才可以高于 0.95。
 
+
 【最终输出前强制自检】
 
-生成 JSON 前，对每个 detection 依次检查：
+输出每个 detection 前必须依次检查：
 
-是否明确看到正面显示面？
-显示面是否存在资产标签、后壳、支架连接、接口、散热孔或其他背面证据？
-是否只是因为目标呈黑色而判断为黑屏？
-是否受到图片中已有检测框、状态文字或 screen 编号影响？
-如果第 1 项为否，或者第 2、3、4、5 项任一为是，必须删除该 detection。
+1. 是否明确是电子显示屏的正面显示区域？
 
-删除无效目标后，再按照从左到右、从上到下的顺序重新分配 id： screen-1、screen-2、screen-3……
+   * 如果是背面、侧面或无法确认正面：删除。
+   * 如果 bbox 主要包含外壳、支架、底座而不是显示区域：删除。
+
+2. 是否受到图片中已有 bbox、track 编号、状态文字或置信度影响？
+
+   * 必须忽略所有已有检测标注，只根据真实画面判断。
+
+3. 状态必须按以下优先级判断：
+
+`贴纸 > 蓝屏 > 黑屏 > 正常`
+
+4. 输出“正常”前，必须再次检查屏幕上是否存在实体纸张或贴纸。
+
+满足以下任一明显特征，应优先判定为“贴纸”：
+
+* 白色/浅色矩形具有独立物理边缘，并遮挡原有屏幕内容；
+* 纸张存在倾斜、透视、阴影、折痕或实体感；
+* **白色/浅色纸张上存在手写或打印的文字、数字、表格、符号、印章等内容；**
+* 文字明显属于纸张内容，而不是屏幕 UI，例如“设备故障”“暂停使用”“维修中”等告示文字。
+
+即使屏幕其他区域仍正常显示，只要确认有实体纸张覆盖，也必须判定为“贴纸”。
+
+5. 不得仅因为屏幕出现“白底+文字”就判定为贴纸。
+
+如果白色区域与屏幕 UI 属于同一显示平面，文字、按钮、窗口等明显由屏幕显示，则不是贴纸。
+
+**判断关键：文字是否位于覆盖屏幕的实体纸张上，而不是文字本身的内容。**
+
+
+6. 输出“黑屏”前，必须确认：
+
+   * 明确看到正面屏幕；
+   * 没有有效显示内容；
+   * 不是黑色后壳或其他黑色物体。
+
+7. 如果状态无法可靠判断，删除该 detection，不要猜测。
+
+8. bbox 必须框整个实际屏幕显示区域。
+
+   * “贴纸”状态也不能只框纸张。
+
+删除无效目标后重新按照从左到右、从上到下分配 id。
 
 label 必须固定为“显示器屏”，不得输出其他 label 值。
 
@@ -546,6 +783,19 @@ def load_dotenv(path: Path) -> None:
             os.environ.setdefault(key, value)
 
 
+def get_model_api_key(model_config: dict[str, Any]) -> tuple[str, str]:
+    """Return the configured environment variable name and its API key value."""
+    api_key_name = str(model_config.get("api_key_name", "")).strip()
+    if not api_key_name:
+        return "", ""
+
+    api_key_env = str(model_config.get("api_key_env", "")).strip()
+    if not api_key_env:
+        normalized_name = re.sub(r"[^A-Za-z0-9]+", "_", api_key_name).strip("_")
+        api_key_env = f"{normalized_name.upper()}_API_KEY"
+    return api_key_env, os.environ.get(api_key_env, "").strip()
+
+
 def parse_image_data(value: Any) -> tuple[str, bytes, str]:
     if not isinstance(value, str):
         raise ServiceError("缺少图片数据。")
@@ -574,30 +824,44 @@ def parse_image_data(value: Any) -> tuple[str, bytes, str]:
     return mime_type, raw, canonical_data_url
 
 
-def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
+def is_cloudflare_browser_signature_block(error_text: str) -> bool:
+    """Return whether an upstream Cloudflare 1010 rule rejected our HTTP signature."""
+    normalized = error_text.lower()
+    return (
+        "browser_signature_banned" in normalized
+        or ("cloudflare" in normalized and "error 1010" in normalized)
+        or '"error_code":1010' in normalized
+    )
+
+
+def call_model(
+    image_data_url: str, profile_name: str | None = None
+) -> tuple[Any, dict[str, Any]]:
     if ACTIVE_CONFIG is None:
         raise ServiceError("服务尚未加载模型配置。", HTTPStatus.SERVICE_UNAVAILABLE)
 
-    model_config = get_model_config(ACTIVE_CONFIG)
-    api_keys = ACTIVE_CONFIG.get("api_keys", {})
-    api_key_name = str(model_config.get("api_key_name", "")).strip()
-    api_key = str(api_keys.get(api_key_name, "")).strip() if isinstance(api_keys, dict) else ""
-    if api_key_name and not api_key:
+    model_config = get_model_config(ACTIVE_CONFIG, profile_name)
+    api_key_env, api_key = get_model_api_key(model_config)
+    if api_key_env and not api_key:
         raise ServiceError(
-            f"配置文件尚未配置 {api_key_name} 的 API Key。",
+            f"尚未配置环境变量 {api_key_env}。",
             HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     model = str(model_config["model"]).strip()
     api_url = str(model_config["chat_endpoint"]).strip()
+    provider = str(model_config.get("provider", "")).strip().lower()
+    
     image_part = {
         "type": "image_url",
         "image_url": {"url": image_data_url},
     }
-    # 百炼使用多模态内容项上的 max_pixels 控制图像输入分辨率。
+    # 百炼和 dashscope 使用多模态内容项上的 max_pixels 控制图像输入分辨率。
     # 不使用 OpenAI 专有的 image_url.detail，避免该字段被兼容接口忽略。
-    if (max_pixels := model_config.get("max_pixels")) is not None:
-        image_part["max_pixels"] = max_pixels
+    # 其他 provider 不支持 max_pixels 参数
+    if provider in ("bailian", "dashscope"):
+        if (max_pixels := model_config.get("max_pixels")) is not None:
+            image_part["max_pixels"] = max_pixels
     payload = {
         "model": model,
         "messages": [
@@ -608,12 +872,12 @@ def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
                     image_part,
                     {
                         "type": "text",
-                        "text": "检测这张图片中的所有显示器屏幕，并严格按指定 JSON 结构返回。",
+                        "text": "检测这张图片中的所有显示器正面，并严格按指定 JSON 结构返回",
                     },
                 ],
             },
         ],
-        "response_format": {"type": "json_object"},
+        #"response_format": {"type": "json_object"},
         "temperature": 0.1,
         # "max_tokens": 2048,
         "stream": False,
@@ -621,18 +885,22 @@ def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
 
     # `enable_thinking` is the shared profile setting.  Most compatible
     # endpoints accept that top-level field; DeepSeek uses `thinking.type`.
-    enable_thinking = model_config["enable_thinking"]
-    provider = str(model_config.get("provider", "")).strip().lower()
-    if provider == "deepseek":
-        payload["thinking"] = {
-            "type": "enabled" if enable_thinking else "disabled",
-        }
-    else:
-        payload["enable_thinking"] = enable_thinking
+    # 如果配置值为空串，则不传递该参数
+    enable_thinking = model_config.get("enable_thinking")
+    if enable_thinking != "":
+        if provider == "deepseek":
+            payload["thinking"] = {
+                "type": "enabled" if enable_thinking else "disabled",
+            }
+        else:
+            payload["enable_thinking"] = enable_thinking
 
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
+        # Do not impersonate a browser.  Cloudflare compares User-Agent with
+        # the actual HTTP/TLS fingerprint and rejects mismatches as error 1010.
+        "User-Agent": "screen-recognition/1.0",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -679,7 +947,12 @@ def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
     # ─────────────────────────────────────────────────────────────────────────
     except urllib.error.HTTPError as exc:
         error_text = exc.read(4096).decode("utf-8", errors="replace")
-        if exc.code in (401, 403):
+        if exc.code == 403 and is_cloudflare_browser_signature_block(error_text):
+            message = (
+                "模型上游服务拒绝了当前客户端特征（Cloudflare 1010）。"
+                "请使用其他推理服务商或联系该服务商解除限制。"
+            )
+        elif exc.code in (401, 403):
             message = "模型服务鉴权失败，请检查服务端 API Key。"
         elif exc.code == 429:
             message = "模型服务请求过于频繁，请稍后重试。"
@@ -723,6 +996,7 @@ def call_model(image_data_url: str) -> tuple[Any, dict[str, Any]]:
 
     parsed = parse_model_json(content)
     meta = {
+        "profile": str(profile_name or ACTIVE_CONFIG.get("model_usage", "")).strip(),
         "model": upstream.get("model", model),
         "usage": upstream.get("usage", {}),
     }
@@ -836,18 +1110,25 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
         if path == "/api/health":
+            model_config = get_model_config(ACTIVE_CONFIG) if ACTIVE_CONFIG else {}
+            _, api_key = get_model_api_key(model_config)
             self.send_json(
                 {
                     "ok": True,
-                    "model": get_model_config(ACTIVE_CONFIG)["model"] if ACTIVE_CONFIG else None,
-                    "apiKeyConfigured": bool(
-                        ACTIVE_CONFIG
-                        and str(
-                            ACTIVE_CONFIG.get("api_keys", {}).get(
-                                get_model_config(ACTIVE_CONFIG).get("api_key_name", ""), ""
-                            )
-                        ).strip()
-                    ),
+                    "model": model_config.get("model") if ACTIVE_CONFIG else None,
+                    "apiKeyConfigured": bool(api_key),
+                }
+            )
+            return
+
+        if path == "/api/models":
+            if ACTIVE_CONFIG is None:
+                self.send_json({"error": "服务尚未加载模型配置。"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            self.send_json(
+                {
+                    "selected": str(ACTIVE_CONFIG.get("model_usage", "")).strip(),
+                    "models": get_public_model_profiles(ACTIVE_CONFIG),
                 }
             )
             return
@@ -893,8 +1174,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise ServiceError("请求 JSON 必须是对象。")
 
+            profile_name = body.get("modelProfile")
+            if profile_name is not None and (
+                not isinstance(profile_name, str) or not profile_name.strip()
+            ):
+                raise ServiceError("模型配置名称无效。")
+            if profile_name is not None:
+                try:
+                    get_model_config(ACTIVE_CONFIG, profile_name)
+                except RuntimeError as exc:
+                    raise ServiceError("所选模型配置不存在或无效。") from exc
+
             _, _, image_data_url = parse_image_data(body.get("image"))
-            model_result, meta = call_model(image_data_url)
+            model_result, meta = call_model(image_data_url, profile_name)
             detections = normalize_detections(model_result)
             self.send_json({"detections": detections, "meta": meta})
         except ServiceError as exc:
@@ -932,7 +1224,7 @@ def main() -> None:
     print(f"Model: {model_config['model']}")
     print(
         "API key: configured"
-        if str(ACTIVE_CONFIG.get("api_keys", {}).get(model_config.get("api_key_name", ""), "")).strip()
+        if get_model_api_key(model_config)[1]
         else "API key: NOT configured"
     )
     try:

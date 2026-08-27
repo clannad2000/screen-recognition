@@ -40,6 +40,18 @@
       cursor: pointer; color: var(--muted); transition: .15s;
     }
     .mode-tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .model-selector {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+      margin: -4px 0 20px; padding: 12px 14px; border: 1px solid #dbeafe;
+      border-radius: 10px; background: #eff6ff;
+    }
+    .model-selector label { margin: 0; }
+    .model-selector select {
+      min-width: min(100%, 360px); max-width: 100%; padding: 7px 10px;
+      border: 1px solid var(--border); border-radius: 7px; background: #fff;
+      color: var(--text); font: inherit; font-size: 13px;
+    }
+    .model-selector .hint { margin: 0; }
 
     .grid {
       display: grid;
@@ -198,6 +210,14 @@
     <button id="tabVideo" class="mode-tab">🎬 视频识别</button>
   </div>
 
+  <div class="model-selector">
+    <label for="modelProfile">模型配置</label>
+    <select id="modelProfile" disabled aria-describedby="modelProfileHint">
+      <option>正在加载模型列表…</option>
+    </select>
+    <span id="modelProfileHint" class="hint">正在从服务读取可用模型配置。</span>
+  </div>
+
   <!-- ======================== 图片模式 ======================== -->
   <div id="imageMode" class="grid">
     <section class="panel">
@@ -299,7 +319,6 @@
 
         <div class="actions">
           <button id="startBtn"  class="primary" disabled>▶ 开始检测</button>
-          <button id="stopBtn"   class="ghost"   disabled>⏹ 停止检测</button>
           <button id="resetBtn"  class="ghost"   disabled>↺ 重置</button>
         </div>
 
@@ -383,6 +402,8 @@
   const modelInfo    = document.getElementById('modelInfo');
   const timeInfo     = document.getElementById('timeInfo');
   const headerState  = document.getElementById('headerState');
+  const modelSelect  = document.getElementById('modelProfile');
+  const modelHint    = document.getElementById('modelProfileHint');
 
   const COLORS = { '正常':'#16a34a','蓝屏':'#2563eb','黑屏':'#dc2626','贴纸':'#d97706' };
   const ALLOWED_TYPES  = new Set(['image/jpeg','image/png','image/webp']);
@@ -390,6 +411,49 @@
 
   let image = null, imageDataUrl = '', imageFileName = 'annotated.png';
   let detections = [], recognizing = false;
+  let modelsReady = false, videoDetectionRunning = false;
+
+  function setModelSelectorState() {
+    modelSelect.disabled = !modelsReady || recognizing || videoDetectionRunning;
+  }
+  function selectedModelProfile() {
+    return modelSelect.value;
+  }
+  function updateModelHint() {
+    const option = modelSelect.selectedOptions[0];
+    modelHint.textContent = option?.dataset.model
+      ? `已选择：${option.dataset.model}；切换后在下一次识别时生效。`
+      : '请选择已配置 API Key 的模型。';
+  }
+  async function loadModelProfiles() {
+    try {
+      const data = await RecognitionApi.models();
+      const selectable = data.models.filter(model => model.apiKeyConfigured);
+      modelSelect.replaceChildren();
+      data.models.forEach(model => {
+        const option = document.createElement('option');
+        option.value = model.id;
+        option.textContent = `${model.id} · ${model.model}${model.provider ? ` (${model.provider})` : ''}`;
+        option.dataset.model = model.model;
+        option.disabled = !model.apiKeyConfigured;
+        if (!model.apiKeyConfigured) option.textContent += ' — 未配置 API Key';
+        modelSelect.appendChild(option);
+      });
+      const selected = selectable.find(model => model.id === data.selected) || selectable[0];
+      if (!selected) throw new Error('没有已配置 API Key 的模型。');
+      modelSelect.value = selected.id;
+      modelsReady = true;
+      updateModelHint();
+      setModelSelectorState();
+      if (controller) updateVideoButtons(true, controller.running);
+      setRecognizing(false);
+    } catch (error) {
+      modelsReady = false;
+      modelSelect.replaceChildren(new Option('模型列表加载失败'));
+      modelHint.textContent = error.message || '无法加载模型列表。';
+      setModelSelectorState();
+    }
+  }
 
   function setStatus(message, type = '') {
     statusEl.textContent = message;
@@ -402,6 +466,7 @@
     clearBtn.disabled     = active || !image;
     downloadBtn.disabled  = active || !image;
     jsonOutput.disabled   = active || !image;
+    setModelSelectorState();
     recognizeBtn.innerHTML = active
       ? '<span class="spinner"></span>模型识别中…' : '开始 AI 识别';
     if (active) { headerState.textContent = '正在识别'; }
@@ -507,7 +572,9 @@
     const controller = new AbortController();
     const timeoutId  = setTimeout(()=>controller.abort(), 130000);
     try {
-      const data = await RecognitionApi.recognize(imageDataUrl, controller.signal);
+      const data = await RecognitionApi.recognize(
+        imageDataUrl, selectedModelProfile(), controller.signal,
+      );
       detections = data.detections;
       drawDetections(detections); showResults(detections);
       jsonOutput.value = JSON.stringify({detections},null,2);
@@ -529,6 +596,7 @@
   }
   imageInput.addEventListener('change', ()=>loadFile(imageInput.files?.[0]));
   recognizeBtn.addEventListener('click', recognize);
+  modelSelect.addEventListener('change', updateModelHint);
   ['dragenter','dragover'].forEach(t=>uploadBox.addEventListener(t,()=>uploadBox.classList.add('dragging')));
   ['dragleave','drop'].forEach(t=>uploadBox.addEventListener(t,()=>uploadBox.classList.remove('dragging')));
   clearBtn.addEventListener('click', ()=>{
@@ -586,7 +654,6 @@
   const videoInput       = document.getElementById('videoInput');
   const videoUploadTitle = document.getElementById('videoUploadTitle');
   const startBtn         = document.getElementById('startBtn');
-  const stopBtn          = document.getElementById('stopBtn');
   const resetBtn         = document.getElementById('resetBtn');
   const videoStatusEl    = document.getElementById('videoStatus');
   const videoEl          = document.getElementById('videoEl');
@@ -616,6 +683,7 @@
       sampleIntervalMs: Math.round(interval * 1000),
       confirmCount:     confirm,
       minConfidence:    confidence,
+      modelProfile:     selectedModelProfile(),
     };
   }
 
@@ -625,8 +693,7 @@
   }
 
   function updateVideoButtons(hasVideo, running) {
-    startBtn.disabled = !hasVideo || running;
-    stopBtn.disabled  = !running;
+    startBtn.disabled = !hasVideo || running || !modelsReady;
     resetBtn.disabled = !hasVideo;
   }
 
@@ -692,6 +759,8 @@
     if (!controller) return;
     if (videoEl.ended) videoEl.currentTime = 0;
     controller.updateConfig(getConfig());
+    videoDetectionRunning = true;
+    setModelSelectorState();
     controller.start();
     videoEl.play().catch(() => {}); // 启动视频播放（静音模式下浏览器允许）
     updateVideoButtons(true, true);
@@ -700,25 +769,27 @@
   });
 
   videoEl.addEventListener('ended', ()=>{
+    videoDetectionRunning = false;
+    setModelSelectorState();
     updateVideoButtons(true, false);
     videoHeaderBadge.textContent = '视频播放结束';
     videoAiInfo.textContent = '视频播放结束';
   });
 
-  stopBtn.addEventListener('click', ()=>{
-    if (!controller) return;
-    controller.stop();
-    updateVideoButtons(true, false);
-    videoHeaderBadge.textContent = '检测已停止';
-  });
-
   resetBtn.addEventListener('click', ()=>{
     if (!controller) return;
+    videoEl.pause();
     controller.reset();
+    videoDetectionRunning = false;
+    setModelSelectorState();
+    videoEl.currentTime = 0;
+    if (videoEl.duration) {
+      videoTimeInfo.textContent = `时间：00:00 / ${formatVideoTime(Math.round(videoEl.duration * 1000))}`;
+    }
     updateVideoButtons(true, false);
     videoHeaderBadge.textContent = '已重置';
     videoAiInfo.textContent = '待机';
-    setVideoStatus('已重置所有检测状态。','ok');
+    setVideoStatus('已重置检测状态和视频进度。','ok');
   });
 
   // 页面卸载时清理
@@ -726,6 +797,8 @@
     if (currentVideoUrl) URL.revokeObjectURL(currentVideoUrl);
     if (controller) controller.destroy();
   });
+
+  loadModelProfiles();
 
 })();
 </script>

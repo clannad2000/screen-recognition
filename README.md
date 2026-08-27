@@ -36,7 +36,8 @@ cd /Volumes/code/projects/screen-recognition
 cp .env.example .env
 ```
 
-编辑 `.env`，把 `SILICONFLOW_API_KEY` 改为新密钥，然后启动：
+编辑 `.env`，为当前模型配置对应的 API Key 设置环境变量（例如
+`SILICONFLOW_API_KEY` 或 `HUGGING_FACE_API_KEY`），然后启动：
 
 ```bash
 python3 server.py
