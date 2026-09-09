@@ -7,33 +7,78 @@
       "chat_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
       "enable_thinking": false
     },
-    "qwen-flash": {
+    "qwen3.5-397b-a17b": {
       "provider": "dashscope",
-      "model": "qwen3.6-flash",
+      "model": "qwen3.5-397b-a17b",
       "api_key_name": "dashscope",
       "chat_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
       "enable_thinking": true
     },
-    "qwen-max": {
+    "qwen3.5-122b-a10b": {
       "provider": "dashscope",
-      "model": "qwen3.7-max-2026-06-08",
+      "model": "qwen3.5-122b-a10b",
+      "api_key_name": "dashscope",
+      "chat_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "max_pixels": 16777216,
+      "enable_thinking": true
+    },
+    "qwen3.5-35b-a3b": {
+      "provider": "bailian",
+      "model": "qwen3.5-35b-a3b",
+      "api_key_name": "bailian",
+      "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "max_pixels": 16777216,
+      "enable_thinking": false
+    },
+   "ai-server-qwen3.8-27b": {
+      "provider": "qwen",
+      "model": "qwen27b",
+      "chat_endpoint": "http://192.168.2.185:18082/v1/chat/completions",
+      "enable_thinking": false
+    },
+    "ai-server-qwen3.8-27b-24g": {
+      "provider": "qwen",
+      "model": "qwen27b",
+      "chat_endpoint": "http://192.168.2.185:18083/v1/chat/completions",
+      "enable_thinking": false
+    },
+    "qwen-flash": {
+      "provider": "dashscope",
+      "model": "qwen3.6-flash",
+      "api_key_name": "dashscope",
+      "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "max_pixels": 16777216,
+      "enable_thinking": true
+    },
+    "qwen3.8-max": {
+      "provider": "dashscope",
+      "model": "qwen3.8-max",
       "api_key_name": "dashscope",
       "chat_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
       "enable_thinking": false
     },
-    "deepseek-v4": {
+    "qwen3.7-plus": {
+      "provider": "dashscope",
+      "model": "qwen3.7-plus",
+      "api_key_name": "dashscope",
+      "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "max_pixels": 16777216,
+      "enable_thinking": false
+    },
+    "deepseek-v4-model_profiles": {
       "provider": "deepseek",
       "model": "deepseek-v4-pro",
       "api_key_name": "deepseek",
       "chat_endpoint": "https://api.deepseek.com/chat/completions",
       "enable_thinking": false
     },
-    "qwen27b": {
-      "provider": "qwen",
-      "model": "qwen27b",
-      "chat_endpoint": "http://192.168.2.185:18082/v1/chat/completions",
+    "deepseek-v4-flash": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "api_key_name": "deepseek",
+      "chat_endpoint": "https://api.deepseek.com/chat/completions",
       "enable_thinking": false
     },
     "qwen3.7-flash": {
@@ -44,15 +89,7 @@
       "max_pixels": 16777216,
       "enable_thinking": false
     },
-    "Qwen3.6-35B-A3B": {
-      "provider": "bailian",
-      "model": "Qwen3.6-35B-A3B",
-      "api_key_name": "bailian",
-      "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
-      "max_pixels": 16777216,
-      "enable_thinking": false
-    },
-    "qwen3.8-27b": {
+    "aliyuncs-qwen3.8-27b": {
       "provider": "bailian",
       "model": "qwen3.8-27b",
       "api_key_name": "bailian",
@@ -60,29 +97,27 @@
       "max_pixels": 16777216,
       "enable_thinking": false
     },
-    "qwen3.6-35b-a3b": {
-      "provider": "bailian",
-      "model": "qwen3.6-35b-a3b",
-      "api_key_name": "bailian",
-      "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
-      "max_pixels": 16777216,
-      "enable_thinking": false
-    },
-    "hugging-face-test": {
+    "gemma-4-26B-A4B-it": {
       "provider": "hugging-face",
       "model": "google/gemma-4-26B-A4B-it",
       "api_key_name": "hugging-face",
       "chat_endpoint": "https://router.huggingface.co/v1/chat/completions",
-      "max_pixels": 16777216,
       "enable_thinking": ""
     },
-    "test": {
-      "provider": "siliconflow",
-      "model": "zai-org/GLM-4.5V",
-      "api_key_name": "siliconflow",
-      "chat_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+    "google/gemma-4-31B-it": {
+      "provider": "hugging-face",
+      "model": "google/gemma-4-31B-it",
+      "api_key_name": "hugging-face",
+      "chat_endpoint": "https://router.huggingface.co/v1/chat/completions",
+      "enable_thinking": ""
+    },
+    "MiniCPM-V-4-MNN": {
+      "provider": "MNN",
+      "model": "modelperm-ModelScope/MNN/MiniCPM-V-4-MNN",
+      "api_key_name": "hugging-face",
+      "chat_endpoint": "http://192.168.2.204:8080/v1/chat/completions",
       "enable_thinking": ""
     }
   },
-  "model_usage": "hugging-face-test"
+  "model_usage": "ai-server-qwen3.8-27b-24g"
 }

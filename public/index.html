@@ -570,7 +570,7 @@
     setStatus('正在上传图片并等待模型分析，通常需要数秒至一分钟…');
     timeInfo.textContent = '识别耗时：计时中…';
     const controller = new AbortController();
-    const timeoutId  = setTimeout(()=>controller.abort(), 130000);
+    const timeoutId  = setTimeout(()=>controller.abort(), 60 * 60 * 1000);
     try {
       const data = await RecognitionApi.recognize(
         imageDataUrl, selectedModelProfile(), controller.signal,

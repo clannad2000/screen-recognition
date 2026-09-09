@@ -81,3 +81,5 @@ Content-Type: application/json
 ```
 
 支持 JPG、PNG、WebP，图片上限为 32 MB。API Key 仅由后端读取，不会发送到浏览器。
+
+模型请求和图片模式浏览器请求的超时时间均为 1 小时。
