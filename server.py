@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Screen-state recognition web service using only Python's standard library."""
+"""Screen-state and VLM video-analysis web service."""
 
 from __future__ import annotations
 
@@ -9,16 +9,25 @@ import binascii
 import json
 import math
 import mimetypes
+import multiprocessing
 import os
+import queue
 import re
+import shutil
 import socket
 import sys
+import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
+import uuid
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -31,6 +40,12 @@ MAX_REQUEST_BYTES = 45 * 1024 * 1024
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ALLOWED_STATES = ("正常", "蓝屏", "黑屏", "贴纸")
 MODEL_REQUEST_TIMEOUT_SECONDS = 60 * 60
+MAX_VIDEO_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024
+ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"}
+VLM_VIDEO_REQUEST_TIMEOUT_SECONDS = 60 * 60
+
+VIDEO_JOBS: dict[str, dict[str, Any]] = {}
+VIDEO_JOBS_LOCK = threading.RLock()
 
 
 def load_config() -> dict[str, Any]:
@@ -60,6 +75,16 @@ def get_model_config(config: dict[str, Any], profile_name: str | None = None) ->
     ):
         raise RuntimeError(f"模型配置 max_pixels 必须为正整数: {usage}")
     return model_config
+
+
+def add_optional_generation_params(
+    payload: dict[str, Any], model_config: dict[str, Any]
+) -> None:
+    """Add profile generation parameters only when they have a configured value."""
+    for key in ("temperature", "max_tokens"):
+        value = model_config.get(key)
+        if value is not None and value != "":
+            payload[key] = value
 
 
 def get_public_model_profiles(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1180,10 +1205,9 @@ def call_model(
             },
         ],
         #"response_format": {"type": "json_object"},
-        "temperature": 0.1,
-        # "max_tokens": 2048,
         "stream": False,
     }
+    add_optional_generation_params(payload, model_config)
 
     # `enable_thinking` is the shared profile setting.  Most compatible
     # endpoints accept that top-level field; DeepSeek uses `thinking.type`.
@@ -1409,11 +1433,393 @@ def normalize_detections(value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def parse_vlm_video_job_config(query: dict[str, list[str]]) -> dict[str, Any]:
+    """Validate the browser-adjustable VLM video parameters."""
+
+    def required_text(name: str) -> str:
+        value = query.get(name, [""])[0].strip()
+        if not value:
+            raise ServiceError(f"缺少参数 {name}。")
+        return value
+
+    def number(name: str, default: float | None = None) -> float:
+        raw = query.get(name, [""])[0].strip()
+        if not raw and default is not None:
+            return default
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ServiceError(f"参数 {name} 必须是数字。") from exc
+        if not math.isfinite(value):
+            raise ServiceError(f"参数 {name} 必须是有限数字。")
+        return value
+
+    def integer(name: str, default: int) -> int:
+        value = number(name, float(default))
+        if not value.is_integer():
+            raise ServiceError(f"参数 {name} 必须是整数。")
+        return int(value)
+
+    sample_interval = number("sampleInterval", 5.0)
+    window_size = integer("windowSize", 3)
+    window_step = integer("windowStep", 1)
+    start_sec = number("startSec", 0.0)
+    end_raw = query.get("endSec", [""])[0].strip()
+    end_sec = number("endSec") if end_raw else None
+
+    if not 0.1 <= sample_interval <= 3600:
+        raise ServiceError("抽帧间隔必须在 0.1～3600 秒之间。")
+    if not 1 <= window_size <= 20:
+        raise ServiceError("窗口大小必须在 1～20 之间。")
+    if not 1 <= window_step <= 1000:
+        raise ServiceError("窗口步长必须在 1～1000 之间。")
+    if start_sec < 0:
+        raise ServiceError("开始时间不能小于 0。")
+    if end_sec is not None and end_sec < start_sec:
+        raise ServiceError("结束时间不能早于开始时间。")
+
+    return {
+        "model_profile": required_text("modelProfile"),
+        "sample_interval": sample_interval,
+        "window_size": window_size,
+        "window_step": window_step,
+        "start_sec": start_sec,
+        "end_sec": end_sec,
+    }
+
+
+def extract_vlm_window_analysis(content: str) -> dict[str, Any]:
+    """Extract the displayable fields from one VLM window result."""
+    parsed = parse_model_json(content)
+    if not isinstance(parsed, dict):
+        raise ServiceError("模型结果不是 JSON 对象。", HTTPStatus.BAD_GATEWAY)
+    summary = parsed.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ServiceError("模型结果缺少 summary。", HTTPStatus.BAD_GATEWAY)
+
+    suspicious = parsed.get("suspicious")
+    if not isinstance(suspicious, bool):
+        suspicious = None
+
+    risk_level = parsed.get("risk_level")
+    if isinstance(risk_level, str) and risk_level.lower() in {"low", "medium", "high"}:
+        risk_level = risk_level.lower()
+    else:
+        risk_level = None
+
+    confidence = parsed.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        confidence = None
+    elif not math.isfinite(confidence):
+        confidence = None
+    else:
+        confidence = max(0.0, min(1.0, float(confidence)))
+
+    return {
+        "summary": summary.strip(),
+        "suspicious": suspicious,
+        "riskLevel": risk_level,
+        "confidence": confidence,
+    }
+
+
+def extract_vlm_summary(content: str) -> str:
+    """Extract a summary while retaining compatibility with existing callers."""
+    return extract_vlm_window_analysis(content)["summary"]
+
+
+def log_vlm_video_invalid_result(
+    *,
+    window_number: int,
+    model_profile: str,
+    frame_ids: list[str],
+    raw_content: str,
+    error: Exception,
+) -> None:
+    """Log the exact VLM output when it cannot be rendered as a summary."""
+    print(
+        json.dumps(
+            {
+                "event": "vlm_video_invalid_model_result",
+                "window": window_number,
+                "model_profile": model_profile,
+                "frame_ids": frame_ids,
+                "error": str(error),
+                "raw_model_content": raw_content,
+            },
+            ensure_ascii=False,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def run_vlm_video_job(
+    event_queue: Any,
+    video_path: str,
+    frame_dir: str,
+    config: dict[str, Any],
+    model_config: dict[str, Any],
+    api_key: str,
+) -> None:
+    """Child-process entry point. A reset can terminate this process immediately."""
+    try:
+        import cv2
+        import requests
+        from vlm_video_demo import (
+            build_payload,
+            call_vlm,
+            chat_completions_url,
+            iter_sampled_frames,
+        )
+
+        capture = cv2.VideoCapture(video_path)
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        capture.release()
+        duration_sec = frame_count / fps if fps > 0 and frame_count > 0 else None
+        event_queue.put(
+            {
+                "type": "metadata",
+                "durationSec": duration_sec,
+                "width": width,
+                "height": height,
+            }
+        )
+
+        endpoint = chat_completions_url(str(model_config["chat_endpoint"]))
+        model = str(model_config["model"])
+        frame_path = Path(frame_dir)
+        window: Any = deque(maxlen=config["window_size"])
+        session = requests.Session()
+        full_window_index = 0
+        sent_window_count = 0
+        sampled_count = 0
+
+        try:
+            for sample in iter_sampled_frames(
+                video_path=video_path,
+                interval_sec=config["sample_interval"],
+                start_sec=config["start_sec"],
+                end_sec=config["end_sec"],
+            ):
+                sampled_count += 1
+                window.append(sample)
+                event_queue.put({"type": "progress", "sampledCount": sampled_count})
+
+                if len(window) < config["window_size"]:
+                    continue
+                if full_window_index % config["window_step"] != 0:
+                    full_window_index += 1
+                    continue
+
+                sent_window_count += 1
+                current_window = list(window)
+                images: list[dict[str, Any]] = []
+                for item in current_window:
+                    filename = f"{item.frame_id}.png"
+                    target = frame_path / filename
+                    if not target.exists():
+                        target.write_bytes(item.png_bytes)
+                    images.append(
+                        {
+                            "frameId": item.frame_id,
+                            "videoTimeMs": item.video_time_ms,
+                            "filename": filename,
+                        }
+                    )
+
+                payload = build_payload(
+                    model=model,
+                    window=current_window,
+                    max_tokens=model_config.get("max_tokens"),
+                    temperature=model_config.get("temperature"),
+                )
+                started_at = time.monotonic()
+                result_event: dict[str, Any] = {
+                    "type": "result",
+                    "sequence": sent_window_count,
+                    "windowNumber": sent_window_count,
+                    "startFrameId": current_window[0].frame_id,
+                    "endFrameId": current_window[-1].frame_id,
+                    "startVideoTimeMs": current_window[0].video_time_ms,
+                    "endVideoTimeMs": current_window[-1].video_time_ms,
+                    "images": images,
+                }
+                try:
+                    result_text = call_vlm(
+                        session=session,
+                        endpoint=endpoint,
+                        api_key=api_key,
+                        payload=payload,
+                        timeout=VLM_VIDEO_REQUEST_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:
+                    print(
+                        json.dumps(
+                            {
+                                "event": "vlm_video_model_request_error",
+                                "window": sent_window_count,
+                                "model_profile": config["model_profile"],
+                                "frame_ids": [item.frame_id for item in current_window],
+                                "error": str(exc),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    result_event["error"] = str(exc)[:2000]
+                else:
+                    try:
+                        result_event.update(extract_vlm_window_analysis(result_text))
+                    except Exception as exc:
+                        log_vlm_video_invalid_result(
+                            window_number=sent_window_count,
+                            model_profile=config["model_profile"],
+                            frame_ids=[item.frame_id for item in current_window],
+                            raw_content=result_text,
+                            error=exc,
+                        )
+                        result_event["error"] = str(exc)[:2000]
+                result_event["elapsedSeconds"] = round(time.monotonic() - started_at, 3)
+                event_queue.put(result_event)
+                full_window_index += 1
+        finally:
+            session.close()
+
+        event_queue.put(
+            {
+                "type": "done",
+                "sampledCount": sampled_count,
+                "sentWindowCount": sent_window_count,
+            }
+        )
+    except BaseException as exc:
+        event_queue.put({"type": "fatal", "error": str(exc)[:2000]})
+
+
+def apply_vlm_video_job_event(job_id: str, event: dict[str, Any]) -> bool:
+    """Apply one worker event. Return True for a terminal event."""
+    with VIDEO_JOBS_LOCK:
+        job = VIDEO_JOBS.get(job_id)
+        if not job or job["status"] in {"cancelled", "cancelling"}:
+            return True
+        event_type = event.get("type")
+        if event_type == "metadata":
+            job["metadata"] = {
+                "durationSec": event.get("durationSec"),
+                "width": event.get("width"),
+                "height": event.get("height"),
+            }
+        elif event_type == "progress":
+            job["sampledCount"] = int(event.get("sampledCount", 0))
+        elif event_type == "result":
+            result = dict(event)
+            result.pop("type", None)
+            for image in result.get("images", []):
+                image["url"] = (
+                    f"/api/vlm-video/jobs/{job_id}/frames/{image.pop('filename')}"
+                )
+            job["results"].append(result)
+            job["sentWindowCount"] = int(event.get("windowNumber", 0))
+        elif event_type == "done":
+            job["sampledCount"] = int(event.get("sampledCount", 0))
+            job["sentWindowCount"] = int(event.get("sentWindowCount", 0))
+            job["status"] = "completed"
+            job["finishedAt"] = time.time()
+            return True
+        elif event_type == "fatal":
+            job["status"] = "failed"
+            job["error"] = str(event.get("error") or "视频分析任务异常终止。")
+            job["finishedAt"] = time.time()
+            return True
+    return False
+
+
+def monitor_vlm_video_job(job_id: str) -> None:
+    with VIDEO_JOBS_LOCK:
+        job = VIDEO_JOBS.get(job_id)
+        if not job:
+            return
+        process = job["process"]
+        event_queue = job["queue"]
+
+    received_terminal = False
+    empty_after_exit = 0
+    while not received_terminal:
+        try:
+            event = event_queue.get(timeout=0.25)
+            empty_after_exit = 0
+            received_terminal = apply_vlm_video_job_event(job_id, event)
+        except queue.Empty:
+            if process.is_alive():
+                continue
+            empty_after_exit += 1
+            if empty_after_exit < 4:
+                continue
+            with VIDEO_JOBS_LOCK:
+                job = VIDEO_JOBS.get(job_id)
+                if job and job["status"] not in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "cancelling",
+                }:
+                    job["status"] = "failed"
+                    job["error"] = "视频分析工作进程异常退出。"
+                    job["finishedAt"] = time.time()
+            break
+        except (EOFError, OSError):
+            break
+    process.join(timeout=1)
+
+
+def public_vlm_video_job(job: dict[str, Any], after: int = 0) -> dict[str, Any]:
+    return {
+        "jobId": job["id"],
+        "status": job["status"],
+        "filename": job["filename"],
+        "modelProfile": job["config"]["model_profile"],
+        "sampledCount": job.get("sampledCount", 0),
+        "sentWindowCount": job.get("sentWindowCount", 0),
+        "metadata": job.get("metadata", {}),
+        "error": job.get("error"),
+        "results": [
+            result for result in job["results"] if int(result.get("sequence", 0)) > after
+        ],
+    }
+
+
+def cancel_vlm_video_job(job_id: str) -> bool:
+    with VIDEO_JOBS_LOCK:
+        job = VIDEO_JOBS.get(job_id)
+        if not job:
+            return False
+        job["status"] = "cancelling"
+        process = job["process"]
+        job_dir = Path(job["jobDir"])
+
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=3)
+        if process.is_alive() and hasattr(process, "kill"):
+            process.kill()
+            process.join(timeout=1)
+    with VIDEO_JOBS_LOCK:
+        VIDEO_JOBS.pop(job_id, None)
+    shutil.rmtree(job_dir, ignore_errors=True)
+    return True
+
+
 class RequestHandler(BaseHTTPRequestHandler):
     server_version = "ScreenRecognition/1.0"
 
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0]
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
         if path == "/api/health":
             model_config = get_model_config(ACTIVE_CONFIG) if ACTIVE_CONFIG else {}
             _, api_key = get_model_api_key(model_config)
@@ -1438,6 +1844,38 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        status_match = re.fullmatch(r"/api/vlm-video/jobs/([0-9a-f]{32})", path)
+        if status_match:
+            job_id = status_match.group(1)
+            try:
+                after = int(parse_qs(parsed_url.query).get("after", ["0"])[0])
+            except ValueError:
+                self.send_json({"error": "after 参数必须是整数。"}, HTTPStatus.BAD_REQUEST)
+                return
+            with VIDEO_JOBS_LOCK:
+                job = VIDEO_JOBS.get(job_id)
+                if not job:
+                    self.send_json({"error": "视频分析任务不存在或已重置。"}, HTTPStatus.NOT_FOUND)
+                    return
+                payload = public_vlm_video_job(job, max(0, after))
+            self.send_json(payload)
+            return
+
+        frame_match = re.fullmatch(
+            r"/api/vlm-video/jobs/([0-9a-f]{32})/frames/(F[0-9]{6}\.png)",
+            path,
+        )
+        if frame_match:
+            job_id, filename = frame_match.groups()
+            with VIDEO_JOBS_LOCK:
+                job = VIDEO_JOBS.get(job_id)
+                target = Path(job["frameDir"]) / filename if job else None
+            if target is None or not target.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self.send_file(target, "image/png")
+            return
+
         relative = "index.html" if path == "/" else path.lstrip("/")
         target = (PUBLIC_DIR / relative).resolve()
         try:
@@ -1459,7 +1897,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self) -> None:
-        if self.path.split("?", 1)[0] != "/api/recognize":
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
+        if path == "/api/vlm-video/jobs":
+            self.handle_vlm_video_create(parse_qs(parsed_url.query, keep_blank_values=True))
+            return
+        reset_match = re.fullmatch(r"/api/vlm-video/jobs/([0-9a-f]{32})/reset", path)
+        if reset_match:
+            self.handle_vlm_video_reset(reset_match.group(1))
+            return
+        if path != "/api/recognize":
             self.send_json({"error": "接口不存在。"}, HTTPStatus.NOT_FOUND)
             return
 
@@ -1500,6 +1947,132 @@ class RequestHandler(BaseHTTPRequestHandler):
             print(f"Unexpected server error: {exc!r}", file=sys.stderr)
             self.send_json({"error": "服务端发生未预期错误。"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def handle_vlm_video_create(self, query: dict[str, list[str]]) -> None:
+        job_dir: Path | None = None
+        job_id: str | None = None
+        try:
+            if ACTIVE_CONFIG is None:
+                raise ServiceError("服务尚未加载模型配置。", HTTPStatus.SERVICE_UNAVAILABLE)
+            config = parse_vlm_video_job_config(query)
+            try:
+                model_config = dict(get_model_config(ACTIVE_CONFIG, config["model_profile"]))
+            except RuntimeError as exc:
+                raise ServiceError("所选模型配置不存在或无效。") from exc
+            api_key_env, api_key = get_model_api_key(model_config)
+            if api_key_env and not api_key:
+                raise ServiceError(
+                    f"尚未配置环境变量 {api_key_env}。",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise ServiceError("视频大小无效。") from exc
+            if content_length <= 0:
+                raise ServiceError("视频文件为空。")
+            if content_length > MAX_VIDEO_UPLOAD_BYTES:
+                raise ServiceError("视频文件不能超过 4 GB。", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+
+            encoded_filename = self.headers.get("X-File-Name", "")
+            filename = Path(unquote(encoded_filename)).name
+            suffix = Path(filename).suffix.lower()
+            if not filename or suffix not in ALLOWED_VIDEO_SUFFIXES:
+                raise ServiceError("仅支持 MP4、MOV、WebM、AVI、MKV 或 M4V 视频。")
+
+            job_id = uuid.uuid4().hex
+            job_dir = Path(tempfile.mkdtemp(prefix=f"screen-vlm-{job_id}-"))
+            frame_dir = job_dir / "frames"
+            frame_dir.mkdir()
+            video_path = job_dir / f"input{suffix}"
+            remaining = content_length
+            with video_path.open("wb") as output:
+                while remaining:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ServiceError("视频上传中断，请重新选择文件。")
+                    output.write(chunk)
+                    remaining -= len(chunk)
+
+            context = multiprocessing.get_context("spawn")
+            event_queue = context.Queue()
+            process = context.Process(
+                target=run_vlm_video_job,
+                args=(
+                    event_queue,
+                    str(video_path),
+                    str(frame_dir),
+                    config,
+                    model_config,
+                    api_key,
+                ),
+                daemon=True,
+            )
+            job = {
+                "id": job_id,
+                "status": "running",
+                "filename": filename,
+                "config": config,
+                "createdAt": time.time(),
+                "sampledCount": 0,
+                "sentWindowCount": 0,
+                "results": [],
+                "metadata": {},
+                "error": None,
+                "jobDir": str(job_dir),
+                "frameDir": str(frame_dir),
+                "process": process,
+                "queue": event_queue,
+            }
+            with VIDEO_JOBS_LOCK:
+                VIDEO_JOBS[job_id] = job
+            try:
+                process.start()
+            except Exception:
+                with VIDEO_JOBS_LOCK:
+                    VIDEO_JOBS.pop(job_id, None)
+                raise
+            threading.Thread(
+                target=monitor_vlm_video_job,
+                args=(job_id,),
+                name=f"vlm-video-monitor-{job_id[:8]}",
+                daemon=True,
+            ).start()
+            self.send_json(public_vlm_video_job(job), HTTPStatus.ACCEPTED)
+        except ServiceError as exc:
+            if job_id and cancel_vlm_video_job(job_id):
+                job_dir = None
+            if job_dir is not None:
+                shutil.rmtree(job_dir, ignore_errors=True)
+            self.send_json({"error": str(exc)}, exc.status)
+        except (BrokenPipeError, ConnectionResetError):
+            if job_id and cancel_vlm_video_job(job_id):
+                job_dir = None
+            if job_dir is not None:
+                shutil.rmtree(job_dir, ignore_errors=True)
+        except Exception as exc:
+            if job_id and cancel_vlm_video_job(job_id):
+                job_dir = None
+            if job_dir is not None:
+                shutil.rmtree(job_dir, ignore_errors=True)
+            print(f"Unexpected VLM video upload error: {exc!r}", file=sys.stderr)
+            self.send_json({"error": "创建视频分析任务失败。"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def handle_vlm_video_reset(self, job_id: str) -> None:
+        removed = cancel_vlm_video_job(job_id)
+        self.send_json({"ok": True, "alreadyReset": not removed})
+
+    def send_file(self, path: Path, content_type: str) -> None:
+        size = path.stat().st_size
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        with path.open("rb") as source:
+            shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+
     def send_json(self, value: Any, status: int = HTTPStatus.OK) -> None:
         data = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(int(status))
@@ -1537,6 +2110,10 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nStopping service.")
     finally:
+        with VIDEO_JOBS_LOCK:
+            active_job_ids = list(VIDEO_JOBS)
+        for job_id in active_job_ids:
+            cancel_vlm_video_job(job_id)
         server.server_close()
 
 

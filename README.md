@@ -29,7 +29,13 @@
 
 ## 启动
 
-项目仅使用 Python 标准库，不需要安装第三方依赖。建议先在 SiliconFlow 控制台作废项目资料中曾经明文保存的旧密钥，并创建新密钥。
+视频事件分析依赖 OpenCV、NumPy 和 Requests。优先使用项目内已有的 `.conda` 环境，或在其他虚拟环境中安装依赖：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+建议先在 SiliconFlow 控制台作废项目资料中曾经明文保存的旧密钥，并创建新密钥。
 
 ```bash
 cd /Volumes/code/projects/screen-recognition
@@ -82,4 +88,10 @@ Content-Type: application/json
 
 支持 JPG、PNG、WebP，图片上限为 32 MB。API Key 仅由后端读取，不会发送到浏览器。
 
-模型请求和图片模式浏览器请求的超时时间均为 1 小时。
+图片与视频的模型请求超时时间均为 1 小时，图片模式浏览器请求超时也为 1 小时。
+
+### 视频事件分析
+
+页面中的“视频事件分析”页签会上传视频，并在独立后台进程中复用
+`vlm_video_demo.py` 的时间轴抽帧和滑动窗口分析。前端展示每个窗口的
+`summary` 与实际输入图片；视频播放结束不会停止任务，点击“重置”才会终止任务并清理临时文件。

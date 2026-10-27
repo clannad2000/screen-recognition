@@ -33,7 +33,7 @@
     .sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
 
     /* 模式切换 */
-    .mode-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+    .mode-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
     .mode-tab {
       padding: 8px 20px; border-radius: 8px; border: 1px solid var(--border);
       background: #fff; font: inherit; font-size: 14px; font-weight: 700;
@@ -193,21 +193,65 @@
 
     .section-title { font-size: 13px; font-weight: 700; color: var(--muted); margin: 14px 0 8px; }
 
+    .panel-stack { display: grid; gap: 20px; min-width: 0; }
+    .vlm-config-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
+    }
+    .vlm-config-grid .num-input { width: 100%; }
+    .vlm-result-list { display: grid; gap: 14px; padding: 16px; }
+    .vlm-result-card {
+      padding: 15px; border: 1px solid #dbeafe; border-left: 4px solid var(--primary);
+      border-radius: 10px; background: #f8fbff;
+    }
+    .vlm-result-card.error { border-color: #fecaca; border-left-color: var(--danger); background: #fff7f7; }
+    .vlm-result-header {
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+      gap: 8px; font-size: 14px;
+    }
+    .vlm-result-summary { margin: 12px 0 14px; font-size: 14px; line-height: 1.75; white-space: pre-wrap; }
+    .vlm-result-details {
+      display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 14px;
+    }
+    .vlm-result-detail {
+      padding: 5px 9px; border: 1px solid #d1d5db; border-radius: 999px;
+      background: #fff; color: #374151; font-size: 12px;
+    }
+    .vlm-risk-low { border-left-color: #ca8a04; background: #fefce8; }
+    .vlm-risk-medium { border-left-color: #ea580c; background: #fff7ed; }
+    .vlm-risk-high { border-left-color: var(--danger); background: #fff7f7; }
+    .vlm-risk-low .vlm-risk-detail { color: #a16207; border-color: #fde68a; background: #fefce8; }
+    .vlm-risk-medium .vlm-risk-detail { color: #c2410c; border-color: #fdba74; background: #fff7ed; }
+    .vlm-risk-high .vlm-risk-detail { color: #b91c1c; border-color: #fecaca; background: #fff7f7; }
+    .vlm-frame-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px;
+    }
+    .vlm-frame-grid figure { min-width: 0; margin: 0; }
+    .vlm-frame-grid img {
+      display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain;
+      border: 1px solid #d1d5db; border-radius: 7px; background: #111827;
+    }
+    .vlm-frame-grid figcaption { margin-top: 5px; color: var(--muted); font-size: 12px; text-align: center; }
+
     @media (max-width: 980px) {
       .app { padding: 16px; }
       .grid { grid-template-columns: 1fr; }
       .canvas-wrap { min-height: 380px; }
+    }
+    @media (max-width: 520px) {
+      .vlm-config-grid { grid-template-columns: 1fr; }
+      .vlm-frame-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
 <main class="app">
   <h1>显示器屏幕状态识别</h1>
-  <p class="sub">支持图片识别和本地视频实时帧识别，多模态模型自动检测显示器屏幕状态。</p>
+  <p class="sub">支持图片识别、视频实时帧识别和视频时序事件分析。</p>
 
   <div class="mode-tabs">
     <button id="tabImage" class="mode-tab active">🖼️ 图片识别</button>
     <button id="tabVideo" class="mode-tab">🎬 视频识别</button>
+    <button id="tabVlmVideo" class="mode-tab">🔎 视频事件分析</button>
   </div>
 
   <div class="model-selector">
@@ -370,6 +414,89 @@
     </section>
   </div>
 
+  <!-- ======================== VLM 视频事件分析 ======================== -->
+  <div id="vlmVideoMode" class="grid" style="display:none">
+    <section class="panel">
+      <div class="panel-header"><span>视频事件分析设置</span><span class="badge">滑动窗口</span></div>
+      <div class="panel-body">
+        <div class="field">
+          <label for="vlmVideoInput">选择本地视频</label>
+          <div id="vlmVideoUploadBox" class="upload-box">
+            <input id="vlmVideoInput" type="file" accept="video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska,.m4v" />
+            <div>
+              <div class="upload-icon">🔎</div>
+              <div id="vlmVideoUploadTitle" class="upload-title">点击选择视频文件</div>
+              <div class="hint">支持 MP4、MOV、WebM、AVI、MKV、M4V，视频将上传到服务器进行时序分析，最大 4 GB</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>分析参数</label>
+          <div class="vlm-config-grid">
+            <div>
+              <div class="hint" style="margin-top:0;margin-bottom:4px">抽帧间隔（秒）</div>
+              <input id="vlmCfgInterval" type="number" class="num-input" value="5" min="0.1" max="3600" step="0.1">
+            </div>
+            <div>
+              <div class="hint" style="margin-top:0;margin-bottom:4px">窗口大小（帧）</div>
+              <input id="vlmCfgWindowSize" type="number" class="num-input" value="3" min="1" max="20" step="1">
+            </div>
+            <div>
+              <div class="hint" style="margin-top:0;margin-bottom:4px">窗口步长（采样帧）</div>
+              <input id="vlmCfgWindowStep" type="number" class="num-input" value="1" min="1" max="1000" step="1">
+            </div>
+            <div>
+              <div class="hint" style="margin-top:0;margin-bottom:4px">开始时间（秒）</div>
+              <input id="vlmCfgStartSec" type="number" class="num-input" value="0" min="0" step="0.1">
+            </div>
+            <div>
+              <div class="hint" style="margin-top:0;margin-bottom:4px">结束时间（秒）</div>
+              <input id="vlmCfgEndSec" type="number" class="num-input" min="0" step="0.1" placeholder="视频结束时间">
+            </div>
+          </div>
+          <div class="hint">开始和结束时间均使用视频自身时间轴；加载视频后默认设置为 0 秒到视频结束。</div>
+        </div>
+
+        <div class="actions">
+          <button id="vlmStartBtn" class="primary" disabled>▶ 开始分析</button>
+          <button id="vlmResetBtn" class="ghost" disabled>↺ 重置</button>
+        </div>
+        <div id="vlmVideoStatus" class="status">请先选择视频文件。</div>
+      </div>
+    </section>
+
+    <div class="panel-stack">
+      <section class="panel">
+        <div class="panel-header">
+          <span>视频预览</span>
+          <span id="vlmVideoHeaderBadge" class="badge">未加载</span>
+        </div>
+        <div class="video-wrap">
+          <div class="video-stage-container">
+            <div class="video-stage" id="vlmVideoStage" style="display:none">
+              <video id="vlmVideoEl" playsinline controls></video>
+            </div>
+            <div id="vlmVideoEmpty" class="empty">选择视频后将在这里播放预览。播放器结束不会停止后台分析。</div>
+          </div>
+        </div>
+        <div class="summary">
+          <span id="vlmVideoResInfo" class="badge">分辨率：—</span>
+          <span id="vlmVideoTimeInfo" class="badge">时间：—</span>
+          <span id="vlmVideoAiInfo" class="badge">AI：待机</span>
+          <span id="vlmVideoProgressInfo" class="badge">抽帧：0 · 结果：0</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><span>窗口分析结果（最新在上）</span></div>
+        <div id="vlmResultList" class="vlm-result-list">
+          <div class="result-empty">每个滑动窗口完成后，将在这里显示分析结论、风险信息和当次输入图片。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
 </main>
 
 <!-- 离屏截帧 canvas（隐藏） -->
@@ -381,6 +508,7 @@
 <script src="/js/screen-tracker.js"></script>
 <script src="/js/state-machine.js"></script>
 <script src="/js/video-recognition.js"></script>
+<script src="/js/vlm-video-analysis.js"></script>
 
 <script>
 (() => {
@@ -411,10 +539,10 @@
 
   let image = null, imageDataUrl = '', imageFileName = 'annotated.png';
   let detections = [], recognizing = false;
-  let modelsReady = false, videoDetectionRunning = false;
+  let modelsReady = false, videoDetectionRunning = false, vlmVideoAnalysisRunning = false;
 
   function setModelSelectorState() {
-    modelSelect.disabled = !modelsReady || recognizing || videoDetectionRunning;
+    modelSelect.disabled = !modelsReady || recognizing || videoDetectionRunning || vlmVideoAnalysisRunning;
   }
   function selectedModelProfile() {
     return modelSelect.value;
@@ -446,12 +574,14 @@
       updateModelHint();
       setModelSelectorState();
       if (controller) updateVideoButtons(true, controller.running);
+      vlmController?.refreshControls();
       setRecognizing(false);
     } catch (error) {
       modelsReady = false;
       modelSelect.replaceChildren(new Option('模型列表加载失败'));
       modelHint.textContent = error.message || '无法加载模型列表。';
       setModelSelectorState();
+      vlmController?.refreshControls();
     }
   }
 
@@ -638,16 +768,28 @@
   // ─── 模式切换 ───────────────────────────────────────────────────────────────
   const tabImage  = document.getElementById('tabImage');
   const tabVideo  = document.getElementById('tabVideo');
+  const tabVlmVideo = document.getElementById('tabVlmVideo');
   const imageMode = document.getElementById('imageMode');
   const videoMode = document.getElementById('videoMode');
+  const vlmVideoMode = document.getElementById('vlmVideoMode');
+
+  function activateMode(activeTab, activeMode) {
+    for (const tab of [tabImage, tabVideo, tabVlmVideo]) {
+      tab.classList.toggle('active', tab === activeTab);
+    }
+    for (const mode of [imageMode, videoMode, vlmVideoMode]) {
+      mode.style.display = mode === activeMode ? '' : 'none';
+    }
+  }
 
   tabImage.addEventListener('click', ()=>{
-    tabImage.classList.add('active'); tabVideo.classList.remove('active');
-    imageMode.style.display=''; videoMode.style.display='none';
+    activateMode(tabImage, imageMode);
   });
   tabVideo.addEventListener('click', ()=>{
-    tabVideo.classList.add('active'); tabImage.classList.remove('active');
-    videoMode.style.display=''; imageMode.style.display='none';
+    activateMode(tabVideo, videoMode);
+  });
+  tabVlmVideo.addEventListener('click', ()=>{
+    activateMode(tabVlmVideo, vlmVideoMode);
   });
 
   // ─── 视频模式 ───────────────────────────────────────────────────────────────
@@ -792,13 +934,59 @@
     setVideoStatus('已重置检测状态和视频进度。','ok');
   });
 
+  // ─── VLM 视频事件分析 ──────────────────────────────────────────────────────
+  const vlmController = new VlmVideoAnalysisController({
+    ui: {
+      fileInput:       document.getElementById('vlmVideoInput'),
+      uploadTitle:     document.getElementById('vlmVideoUploadTitle'),
+      video:           document.getElementById('vlmVideoEl'),
+      videoStage:      document.getElementById('vlmVideoStage'),
+      videoEmpty:      document.getElementById('vlmVideoEmpty'),
+      sampleInterval:  document.getElementById('vlmCfgInterval'),
+      windowSize:      document.getElementById('vlmCfgWindowSize'),
+      windowStep:      document.getElementById('vlmCfgWindowStep'),
+      startSec:        document.getElementById('vlmCfgStartSec'),
+      endSec:          document.getElementById('vlmCfgEndSec'),
+      configInputs: [
+        document.getElementById('vlmCfgInterval'),
+        document.getElementById('vlmCfgWindowSize'),
+        document.getElementById('vlmCfgWindowStep'),
+        document.getElementById('vlmCfgStartSec'),
+        document.getElementById('vlmCfgEndSec'),
+      ],
+      startButton:     document.getElementById('vlmStartBtn'),
+      resetButton:     document.getElementById('vlmResetBtn'),
+      status:          document.getElementById('vlmVideoStatus'),
+      headerBadge:     document.getElementById('vlmVideoHeaderBadge'),
+      resolutionBadge: document.getElementById('vlmVideoResInfo'),
+      timeBadge:       document.getElementById('vlmVideoTimeInfo'),
+      aiBadge:         document.getElementById('vlmVideoAiInfo'),
+      progressBadge:   document.getElementById('vlmVideoProgressInfo'),
+      results:         document.getElementById('vlmResultList'),
+    },
+    getModelProfile: selectedModelProfile,
+    canStart: () => modelsReady,
+    onRunningChange: running => {
+      vlmVideoAnalysisRunning = running;
+      setModelSelectorState();
+    },
+  });
+  const vlmVideoInput = document.getElementById('vlmVideoInput');
+  vlmVideoInput.addEventListener('change', () => {
+    vlmController.loadFile(vlmVideoInput.files?.[0]);
+  });
+  document.getElementById('vlmStartBtn').addEventListener('click', () => vlmController.start());
+  document.getElementById('vlmResetBtn').addEventListener('click', () => vlmController.reset());
+
   // 页面卸载时清理
   window.addEventListener('beforeunload', ()=>{
     if (currentVideoUrl) URL.revokeObjectURL(currentVideoUrl);
     if (controller) controller.destroy();
+    vlmController.destroy();
   });
 
   loadModelProfiles();
+  vlmController.restore();
 
 })();
 </script>

@@ -1,12 +1,21 @@
 import os
+import io
+import json
 import unittest
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 from server import (
+    ServiceError,
+    add_optional_generation_params,
+    extract_vlm_window_analysis,
+    extract_vlm_summary,
     get_model_api_key,
     get_model_config,
     get_public_model_profiles,
     is_cloudflare_browser_signature_block,
+    log_vlm_video_invalid_result,
+    parse_vlm_video_job_config,
 )
 
 
@@ -55,6 +64,90 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual([profile["id"] for profile in profiles], ["default", "remote"])
         self.assertFalse(profiles[1]["apiKeyConfigured"])
         self.assertNotIn("chat_endpoint", profiles[1])
+
+
+class GenerationParameterTests(unittest.TestCase):
+    def test_omits_blank_generation_parameters(self):
+        payload = {"model": "test-model"}
+        add_optional_generation_params(
+            payload, {"temperature": "", "max_tokens": ""}
+        )
+        self.assertNotIn("temperature", payload)
+        self.assertNotIn("max_tokens", payload)
+
+    def test_includes_configured_generation_parameters(self):
+        payload = {"model": "test-model"}
+        add_optional_generation_params(
+            payload, {"temperature": 0.2, "max_tokens": 2048}
+        )
+        self.assertEqual(payload["temperature"], 0.2)
+        self.assertEqual(payload["max_tokens"], 2048)
+
+
+class VlmVideoJobConfigTests(unittest.TestCase):
+    def test_parses_browser_adjustable_parameters(self):
+        parsed = parse_vlm_video_job_config(
+            {
+                "modelProfile": ["local-vlm"],
+                "sampleInterval": ["5"],
+                "windowSize": ["3"],
+                "windowStep": ["1"],
+                "startSec": ["10.5"],
+                "endSec": ["90"],
+            }
+        )
+        self.assertEqual(parsed["model_profile"], "local-vlm")
+        self.assertEqual(parsed["window_size"], 3)
+        self.assertEqual(parsed["start_sec"], 10.5)
+        self.assertEqual(parsed["end_sec"], 90.0)
+
+    def test_rejects_end_before_start(self):
+        with self.assertRaises(ServiceError):
+            parse_vlm_video_job_config(
+                {
+                    "modelProfile": ["local-vlm"],
+                    "startSec": ["12"],
+                    "endSec": ["10"],
+                }
+            )
+
+
+class VlmSummaryTests(unittest.TestCase):
+    def test_extracts_window_display_fields(self):
+        result = extract_vlm_window_analysis(
+            '{"summary":"窗口摘要","suspicious":true,"risk_level":"high","confidence":0.95}'
+        )
+        self.assertEqual(
+            result,
+            {
+                "summary": "窗口摘要",
+                "suspicious": True,
+                "riskLevel": "high",
+                "confidence": 0.95,
+            },
+        )
+
+    def test_extracts_only_summary_from_fenced_json(self):
+        content = '```json\n{"summary":"窗口摘要","events":[{"hidden":true}]}\n```'
+        self.assertEqual(extract_vlm_summary(content), "窗口摘要")
+
+    def test_rejects_missing_summary(self):
+        with self.assertRaises(ServiceError):
+            extract_vlm_summary('{"events":[]}')
+
+    def test_logs_raw_content_when_summary_cannot_be_extracted(self):
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            log_vlm_video_invalid_result(
+                window_number=2,
+                model_profile="test-vlm",
+                frame_ids=["F000001", "F000002"],
+                raw_content="模型返回的非 JSON 内容",
+                error=ServiceError("模型未返回有效 JSON。"),
+            )
+        payload = json.loads(stream.getvalue())
+        self.assertEqual(payload["event"], "vlm_video_invalid_model_result")
+        self.assertEqual(payload["raw_model_content"], "模型返回的非 JSON 内容")
 
 
 if __name__ == "__main__":

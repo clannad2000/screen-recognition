@@ -1004,7 +1004,9 @@ high：
 suspicious=false
 events=[]
 
-如果发现明确设备异常但无法证明与人物有关，仍应在 frame_summary 和 summary 中报告设备异常。""".strip()
+如果发现明确设备异常但无法证明与人物有关，仍应在 frame_summary 和 summary 中报告设备异常。
+使用中文回复
+""".strip()
 
 @dataclass
 class FrameSample:
@@ -1276,13 +1278,13 @@ def build_user_content(window: List[FrameSample]) -> List[Dict[str, Any]]:
 def build_payload(
     model: str,
     window: List[FrameSample],
-    max_tokens: int,
-    temperature: float,
+    max_tokens: Any | None,
+    temperature: Any | None,
 ) -> Dict[str, Any]:
     # Deliberately does NOT use response_format=json_object:
     # many OpenAI-compatible servers do not implement it consistently.
     # JSON-only output is enforced by the prompt instead.
-    return {
+    payload = {
         "model": model,
         "messages": [
             {
@@ -1294,9 +1296,11 @@ def build_payload(
                 "content": build_user_content(window),
             },
         ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
     }
+    for key, value in (("temperature", temperature), ("max_tokens", max_tokens)):
+        if value is not None and value != "":
+            payload[key] = value
+    return payload
 
 
 def extract_message_content(response_json: Dict[str, Any]) -> str:

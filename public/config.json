@@ -5,7 +5,9 @@
       "model": "deepseek-ai/DeepSeek-OCR",
       "api_key_name": "siliconflow",
       "chat_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
     },
     "qwen3.5-397b-a17b": {
       "provider": "dashscope",
@@ -13,7 +15,9 @@
       "api_key_name": "dashscope",
       "chat_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
-      "enable_thinking": true
+      "enable_thinking": true,
+      "temperature": "",
+      "max_tokens": ""
     },
     "qwen3.5-122b-a10b": {
       "provider": "dashscope",
@@ -21,7 +25,9 @@
       "api_key_name": "dashscope",
       "chat_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
-      "enable_thinking": true
+      "enable_thinking": true,
+      "temperature": "",
+      "max_tokens": ""
     },
     "qwen3.5-35b-a3b": {
       "provider": "bailian",
@@ -29,19 +35,9 @@
       "api_key_name": "bailian",
       "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
-      "enable_thinking": false
-    },
-   "ai-server-qwen3.8-27b": {
-      "provider": "qwen",
-      "model": "qwen27b",
-      "chat_endpoint": "http://192.168.2.185:18082/v1/chat/completions",
-      "enable_thinking": false
-    },
-    "ai-server-qwen3.8-27b-24g": {
-      "provider": "qwen",
-      "model": "qwen27b",
-      "chat_endpoint": "http://192.168.2.185:18083/v1/chat/completions",
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
     },
     "qwen-flash": {
       "provider": "dashscope",
@@ -49,7 +45,9 @@
       "api_key_name": "dashscope",
       "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
-      "enable_thinking": true
+      "enable_thinking": true,
+      "temperature": "",
+      "max_tokens": ""
     },
     "qwen3.8-max": {
       "provider": "dashscope",
@@ -57,7 +55,9 @@
       "api_key_name": "dashscope",
       "chat_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
     },
     "qwen3.7-plus": {
       "provider": "dashscope",
@@ -65,21 +65,27 @@
       "api_key_name": "dashscope",
       "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
     },
     "deepseek-v4-model_profiles": {
       "provider": "deepseek",
       "model": "deepseek-v4-pro",
       "api_key_name": "deepseek",
       "chat_endpoint": "https://api.deepseek.com/chat/completions",
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
     },
     "deepseek-v4-flash": {
       "provider": "deepseek",
       "model": "deepseek-v4-flash",
       "api_key_name": "deepseek",
       "chat_endpoint": "https://api.deepseek.com/chat/completions",
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
     },
     "qwen3.7-flash": {
       "provider": "bailian",
@@ -87,7 +93,9 @@
       "api_key_name": "bailian",
       "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
     },
     "aliyuncs-qwen3.8-27b": {
       "provider": "bailian",
@@ -95,29 +103,61 @@
       "api_key_name": "bailian",
       "chat_endpoint": "https://llm-0xskvjwdy0qgldeh.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
       "max_pixels": 16777216,
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
     },
     "gemma-4-26B-A4B-it": {
       "provider": "hugging-face",
       "model": "google/gemma-4-26B-A4B-it",
       "api_key_name": "hugging-face",
       "chat_endpoint": "https://router.huggingface.co/v1/chat/completions",
-      "enable_thinking": ""
+      "enable_thinking": "",
+      "temperature": "",
+      "max_tokens": ""
     },
     "google/gemma-4-31B-it": {
       "provider": "hugging-face",
       "model": "google/gemma-4-31B-it",
       "api_key_name": "hugging-face",
       "chat_endpoint": "https://router.huggingface.co/v1/chat/completions",
-      "enable_thinking": ""
+      "enable_thinking": "",
+      "temperature": "",
+      "max_tokens": ""
     },
-    "MiniCPM-V-4-MNN": {
+    "Qwen3.5-9B-MNN": {
       "provider": "MNN",
-      "model": "modelperm-ModelScope/MNN/MiniCPM-V-4-MNN",
+      "model": "Qwen3.5-9B-MNN",
       "api_key_name": "hugging-face",
-      "chat_endpoint": "http://192.168.2.204:8080/v1/chat/completions",
-      "enable_thinking": ""
+      "chat_endpoint": "http://192.168.2.185:28001/v1/chat/completions",
+      "enable_thinking": "",
+      "temperature": "",
+      "max_tokens": ""
+    },
+    "ai-server-qwen3.8-flash-next": {
+      "provider": "qwen",
+      "model": "qwen3.8-flash-next",
+      "chat_endpoint": "http://192.168.2.185:18082/v1/chat/completions",
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
+    },
+    "offline-ai-server-qwen3.8-27b": {
+      "provider": "qwen",
+      "model": "qwen27b",
+      "chat_endpoint": "http://192.168.2.185:18082/v1/chat/completions",
+      "enable_thinking": false,
+      "temperature": "",
+      "max_tokens": ""
+    },
+    "offline-ai-server-qwen3.8-27b-16g": {
+      "provider": "qwen",
+      "model": "qwen27b",
+      "chat_endpoint": "http://192.168.2.185:18083/v1/chat/completions",
+      "enable_thinking": false,
+      "max_tokens": 262144,
+      "temperature": 0.1
     }
   },
-  "model_usage": "ai-server-qwen3.8-27b-24g"
+  "model_usage": "Qwen3.5-9B-MNN"
 }
